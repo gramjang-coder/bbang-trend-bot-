@@ -76,6 +76,7 @@ def setup_all_dbs():
     })
     setup_db_properties(DB['competitor'], {
         '수집 날짜':    {'date': {}},
+        '기간':         {'select': {}},
         '캡션':         {'rich_text': {}},
         '좋아요':       {'number': {}},
         '댓글':         {'number': {}},
@@ -144,29 +145,65 @@ def collect_hashtags():
  
  
 # ── 2. 경쟁 계정 성과 수집 ────────────────────────────────────────
+from datetime import timedelta
+ 
+def _fetch_competitor_posts(label, newer_than=None, older_than=None):
+    params = {
+        'directUrls': [f'https://www.instagram.com/{acc}/' for acc in COMPETITOR_ACCOUNTS],
+        'resultsType': 'posts',
+        'resultsLimit': 10,
+    }
+    if newer_than:
+        params['onlyPostsNewerThan'] = newer_than
+    if older_than:
+        params['onlyPostsOlderThan'] = older_than
+    data = run_apify('apify/instagram-scraper', params)
+    results = []
+    for item in data:
+        results.append({
+            'account': item.get('ownerUsername', ''),
+            'caption': (item.get('caption', '') or '')[:200],
+            'likes': item.get('likesCount', 0),
+            'comments': item.get('commentsCount', 0),
+            'views': item.get('videoViewCount', 0),
+            'url': item.get('url', ''),
+            'hashtags': ', '.join((item.get('hashtags', []) or [])[:10]),
+            'platform': 'Instagram',
+            'period': label,
+        })
+    return results
+ 
+ 
 def collect_competitors():
     print('👥 경쟁 계정 수집 중...')
+    today = date.today()
+    periods = [
+        # 현재: 최근 7일
+        ('현재',
+         (today - timedelta(days=7)).isoformat(), today.isoformat()),
+        # 현재부터 1달 전: 최근 30일 전체
+        ('현재부터 1달 전',
+         (today - timedelta(days=30)).isoformat(), today.isoformat()),
+        # 1년 전: 작년 동일 시점 ±7일
+        ('1년 전',
+         (today - timedelta(days=372)).isoformat(), (today - timedelta(days=358)).isoformat()),
+        # 1년 1개월 전: 13개월 전 동일 시점 ±7일
+        ('1년 1개월 전',
+         (today - timedelta(days=403)).isoformat(), (today - timedelta(days=389)).isoformat()),
+        # 1년 전 ~ 1년 1개월 전 사이 전체 (작년 해당 월 게시글 모두)
+        ('1년전~1년1개월전 전체',
+         (today - timedelta(days=396)).isoformat(), (today - timedelta(days=365)).isoformat()),
+    ]
     results = []
-    try:
-        data = run_apify('apify/instagram-scraper', {
-            'directUrls': [f'https://www.instagram.com/{acc}/' for acc in COMPETITOR_ACCOUNTS],
-            'resultsType': 'posts',
-            'resultsLimit': 10,
-        })
-        for item in data:
-            results.append({
-                'account': item.get('ownerUsername', ''),
-                'caption': (item.get('caption', '') or '')[:200],
-                'likes': item.get('likesCount', 0),
-                'comments': item.get('commentsCount', 0),
-                'views': item.get('videoViewCount', 0),
-                'url': item.get('url', ''),
-                'hashtags': ', '.join((item.get('hashtags', []) or [])[:10]),
-                'platform': 'Instagram',
-            })
-    except Exception as e:
-        print(f'  ⚠️ 경쟁 계정 실패: {e}')
-    print(f'  → {len(results)}개 수집')
+    for label, newer, older in periods:
+        print(f'  📅 {label} ({newer} ~ {older or "현재"}) ...')
+        try:
+            items = _fetch_competitor_posts(label, newer_than=newer, older_than=older)
+            results.extend(items)
+            print(f'     → {len(items)}개')
+        except Exception as e:
+            print(f'  ⚠️ {label} 실패: {e}')
+    print(f'  → 합계 {len(results)}개 수집')
     return results
  
  
@@ -272,55 +309,23 @@ def collect_naver():
     return results
  
  
-# ── 6. Claude로 순위 산정 ─────────────────────────────────────────
-def rank_with_claude(category, items):
+# ── 6. 순위 산정 (Python 정렬) ───────────────────────────────────
+def rank_items(category, items):
     if not items:
         return []
-    print(f'🤖 Claude 순위 산정: {category}')
-    client = Anthropic(api_key=ANTHROPIC_KEY)
- 
-    # 최대 30개만 전달 (JSON 파싱 안정성)
-    items = items[:30]
- 
-    prompt = f"""아래는 오늘({TODAY}) 수집된 [{category}] 데이터입니다.
-순위를 매기고, 각 항목에 "rank" 필드(1부터 시작)를 추가해서 JSON 배열로만 반환하세요.
- 
-순위 기준:
-- 트렌딩 해시태그: post_count 높은 순
-- 경쟁 계정 성과: likes + comments + views 합산 높은 순
-- F&B 키워드 버즈량: mention_count 높은 순
-- 급상승 콘텐츠: views 높은 순
- 
-데이터:
-{json.dumps(items, ensure_ascii=False)}
- 
-반드시 JSON 배열([...])만 반환. 설명 텍스트, 마크다운 코드블록 없이."""
- 
-    resp = client.messages.create(
-        model='claude-sonnet-4-20250514',
-        max_tokens=8000,
-        messages=[{'role': 'user', 'content': prompt}],
-    )
-    text = resp.content[0].text.strip()
- 
-    # 코드블록 제거
-    if '```' in text:
-        parts = text.split('```')
-        for part in parts:
-            part = part.strip()
-            if part.startswith('json'):
-                part = part[4:].strip()
-            if part.startswith('['):
-                text = part
-                break
- 
-    # [ ] 범위만 추출
-    start = text.find('[')
-    end = text.rfind(']')
-    if start != -1 and end != -1:
-        text = text[start:end+1]
- 
-    return json.loads(text)
+    print(f'📊 순위 산정: {category}')
+    if category == '트렌딩 해시태그':
+        key = lambda x: x.get('post_count', 0)
+    elif category == '경쟁 계정 성과':
+        key = lambda x: x.get('likes', 0) + x.get('comments', 0) + x.get('views', 0)
+    elif category == 'F&B 키워드 버즈량':
+        key = lambda x: x.get('mention_count', 0)
+    else:
+        key = lambda x: x.get('views', 0)
+    sorted_items = sorted(items, key=key, reverse=True)[:30]
+    for i, item in enumerate(sorted_items, 1):
+        item['rank'] = i
+    return sorted_items
  
  
 # ── 7. Notion 저장 헬퍼 ───────────────────────────────────────────
@@ -360,6 +365,7 @@ def save_competitors(items):
         notion_post(DB['competitor'], {
             'Name':         {'title': [{'text': {'content': item.get('account', '')}}]},
             '수집 날짜':    {'date': {'start': TODAY}},
+            '기간':         {'select': {'name': item.get('period', '현재')}},
             '캡션':         {'rich_text': [{'text': {'content': item.get('caption', '')}}]},
             '좋아요':       {'number': item.get('likes', 0)},
             '댓글':         {'number': item.get('comments', 0)},
@@ -412,10 +418,10 @@ if __name__ == '__main__':
     print(f'\n📊 수집 완료 — 해시태그 {len(hashtag_data)} | 경쟁계정 {len(competitor_data)} | 버즈량 {len(buzz_data)} | 급상승 {len(viral_data)}\n')
  
     # Claude 순위 산정
-    hashtag_ranked    = rank_with_claude('트렌딩 해시태그', hashtag_data)
-    competitor_ranked = rank_with_claude('경쟁 계정 성과', competitor_data)
-    buzz_ranked       = rank_with_claude('F&B 키워드 버즈량', buzz_data)
-    viral_ranked      = rank_with_claude('급상승 콘텐츠', viral_data)
+    hashtag_ranked    = rank_items('트렌딩 해시태그', hashtag_data)
+    competitor_ranked = rank_items('경쟁 계정 성과', competitor_data)
+    buzz_ranked       = rank_items('F&B 키워드 버즈량', buzz_data)
+    viral_ranked      = rank_items('급상승 콘텐츠', viral_data)
  
     # Notion 저장
     print('\n💾 Notion 저장 중...')
@@ -425,3 +431,4 @@ if __name__ == '__main__':
     save_viral(viral_ranked)
  
     print('\n✅ 완료!')
+ 
