@@ -7,7 +7,6 @@ from collections import Counter
 import gspread
 from google.oauth2.service_account import Credentials
 
-# ── 환경변수 ──────────────────────────────────────────────────────
 APIFY_KEY    = os.environ['APIFY_API_KEY']
 YOUTUBE_KEY  = os.environ['YOUTUBE_API_KEY']
 NAVER_ID     = os.environ.get('NAVER_CLIENT_ID', '')
@@ -53,12 +52,12 @@ def get_or_create_sheet(workbook, title, headers):
     return ws
 
 
-def run_apify(actor_id, input_data, timeout=180):
+def run_apify(actor_id, input_data, timeout=240):
     actor_id = actor_id.replace('/', '~')
     url = f'https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items'
     resp = requests.post(
         url,
-        params={'token': APIFY_KEY, 'timeout': 120, 'memory': 256},
+        params={'token': APIFY_KEY, 'timeout': 180, 'memory': 512},
         json=input_data,
         timeout=timeout,
     )
@@ -66,86 +65,114 @@ def run_apify(actor_id, input_data, timeout=180):
     return resp.json()
 
 
-def _fetch_competitor_posts(label, newer_than=None, older_than=None):
-    limit = 30 if label in ('1년전~1년1개월전 전체', '현재부터 1달 전') else 15
-    params = {
-        'directUrls': [f'https://www.instagram.com/{acc}/' for acc in COMPETITOR_ACCOUNTS],
-        'resultsType': 'posts',
-        'resultsLimit': limit,
+def parse_post(item, period):
+    caption = (
+        item.get('caption') or item.get('text') or
+        item.get('description') or item.get('accessibility_caption') or ''
+    )
+    hashtags_raw = item.get('hashtags') or []
+    if not hashtags_raw and caption:
+        hashtags_raw = re.findall(r'#(\w+)', caption)
+
+    published = (
+        item.get('timestamp') or item.get('taken_at_timestamp') or
+        item.get('takenAtTimestamp') or item.get('date') or
+        item.get('publishedAt') or ''
+    )
+    if isinstance(published, (int, float)) and published > 1000000000:
+        published = datetime.utcfromtimestamp(published).strftime('%Y-%m-%d')
+    elif isinstance(published, str) and 'T' in published:
+        published = published[:10]
+
+    thumbnail = (
+        item.get('displayUrl') or item.get('thumbnailUrl') or
+        item.get('thumbnail_url') or item.get('imageUrl') or
+        item.get('previewUrl') or ''
+    )
+
+    return {
+        'account':      item.get('ownerUsername', '') or item.get('username', ''),
+        'caption':      caption[:300],
+        'likes':        item.get('likesCount', 0) or item.get('likes', 0) or 0,
+        'comments':     item.get('commentsCount', 0) or item.get('comments', 0) or 0,
+        'views':        item.get('videoViewCount', 0) or item.get('videoPlayCount', 0) or 0,
+        'url':          item.get('url', ''),
+        'hashtags':     ', '.join((hashtags_raw or [])[:15]),
+        'period':       period,
+        'published_at': str(published) if published else '',
+        'thumbnail':    thumbnail,
     }
-    if newer_than:
-        params['onlyPostsNewerThan'] = newer_than
-    if older_than:
-        params['onlyPostsOlderThan'] = older_than
-
-    data = run_apify('apify/instagram-scraper', params)
-    seen_urls = set()
-    results = []
-    for item in data:
-        url = item.get('url', '')
-        if url in seen_urls:
-            continue
-        seen_urls.add(url)
-
-        caption = (
-            item.get('caption') or item.get('text') or
-            item.get('description') or item.get('accessibility_caption') or ''
-        )
-        hashtags_raw = item.get('hashtags') or []
-        if not hashtags_raw and caption:
-            hashtags_raw = re.findall(r'#(\w+)', caption)
-
-        published = (
-            item.get('timestamp') or item.get('taken_at_timestamp') or
-            item.get('takenAtTimestamp') or item.get('date') or
-            item.get('publishedAt') or ''
-        )
-        if isinstance(published, (int, float)) and published > 1000000000:
-            published = datetime.utcfromtimestamp(published).strftime('%Y-%m-%d')
-        elif isinstance(published, str) and 'T' in published:
-            published = published[:10]
-
-        thumbnail = (
-            item.get('displayUrl') or item.get('thumbnailUrl') or
-            item.get('thumbnail_url') or item.get('imageUrl') or
-            item.get('previewUrl') or ''
-        )
-
-        results.append({
-            'account':      item.get('ownerUsername', '') or item.get('username', ''),
-            'caption':      caption[:300],
-            'likes':        item.get('likesCount', 0) or item.get('likes', 0) or 0,
-            'comments':     item.get('commentsCount', 0) or item.get('comments', 0) or 0,
-            'views':        item.get('videoViewCount', 0) or item.get('videoPlayCount', 0) or 0,
-            'url':          url,
-            'hashtags':     ', '.join((hashtags_raw or [])[:15]),
-            'period':       label,
-            'published_at': str(published) if published else '',
-            'thumbnail':    thumbnail,
-        })
-    return results
 
 
 def collect_competitors():
     print('👥 경쟁 계정 수집 중...')
     today = date.today()
-    periods = [
-        ('현재',                (today - timedelta(days=7)).isoformat(),   today.isoformat()),
-        ('현재부터 1달 전',     (today - timedelta(days=30)).isoformat(),  today.isoformat()),
-        ('1년 전',              (today - timedelta(days=372)).isoformat(), (today - timedelta(days=358)).isoformat()),
-        ('1년 1개월 전',        (today - timedelta(days=403)).isoformat(), (today - timedelta(days=389)).isoformat()),
-        ('1년전~1년1개월전 전체',(today - timedelta(days=396)).isoformat(),(today - timedelta(days=335)).isoformat()),
-    ]
+
+    # 각 계정별로 최대한 많은 게시물 한 번에 수집 후 기간으로 분류
+    all_posts = {}  # url -> post
+
+    print('  📥 전체 게시물 수집 중 (계정당 최대 50개)...')
+    try:
+        data = run_apify('apify/instagram-scraper', {
+            'directUrls': [f'https://www.instagram.com/{acc}/' for acc in COMPETITOR_ACCOUNTS],
+            'resultsType': 'posts',
+            'resultsLimit': 50,
+        })
+        for item in data:
+            url = item.get('url', '')
+            if url and url not in all_posts:
+                all_posts[url] = parse_post(item, '')
+        print(f'  → {len(all_posts)}개 고유 게시물 수집')
+    except Exception as e:
+        print(f'  ⚠️ 수집 실패: {e}')
+        return []
+
+    # 발행일자 기준으로 기간 분류
+    today_dt = date.today()
+    periods_range = {
+        '현재':               (today_dt - timedelta(days=7),   today_dt),
+        '현재부터 1달 전':    (today_dt - timedelta(days=30),  today_dt),
+        '1년 전':             (today_dt - timedelta(days=372), today_dt - timedelta(days=358)),
+        '1년 1개월 전':       (today_dt - timedelta(days=403), today_dt - timedelta(days=389)),
+        '1년전~1년1개월전 전체': (today_dt - timedelta(days=396), today_dt - timedelta(days=335)),
+    }
+
     results = []
-    for label, newer, older in periods:
-        print(f'  📅 {label} ({newer} ~ {older}) ...')
+    for url, post in all_posts.items():
+        pub = post.get('published_at', '')
+        if not pub:
+            # 발행일자 없으면 '현재'로 분류
+            p = post.copy()
+            p['period'] = '현재'
+            results.append(p)
+            continue
         try:
-            items = _fetch_competitor_posts(label, newer_than=newer, older_than=older)
-            results.extend(items)
-            print(f'     → {len(items)}개')
-        except Exception as e:
-            print(f'  ⚠️ {label} 실패: {e}')
-    print(f'  → 합계 {len(results)}개 수집')
+            pub_dt = date.fromisoformat(pub[:10])
+        except:
+            p = post.copy()
+            p['period'] = '현재'
+            results.append(p)
+            continue
+
+        # 해당되는 모든 기간에 추가
+        matched = False
+        for period_name, (start, end) in periods_range.items():
+            if start <= pub_dt <= end:
+                p = post.copy()
+                p['period'] = period_name
+                results.append(p)
+                matched = True
+        if not matched:
+            p = post.copy()
+            p['period'] = '기타'
+            results.append(p)
+
+    # 기간별 카운트 출력
+    from collections import Counter as C
+    period_counts = C(r['period'] for r in results)
+    for period, count in period_counts.items():
+        print(f'  📅 {period}: {count}개')
+    print(f'  → 합계 {len(results)}개')
     return results
 
 
@@ -254,7 +281,7 @@ def rank_items(category, items):
     return sorted_items
 
 
-def set_row_heights(workbook, ws, start_row, end_row, height=100):
+def set_row_heights(workbook, ws, start_row, end_row, height=150):
     try:
         workbook.batch_update({'requests': [{
             'updateDimensionProperties': {
@@ -278,16 +305,26 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, buzz_data, viral_dat
     rows1 = []
     for item in competitor_data:
         thumb = item.get('thumbnail', '')
+        # IMAGE 모드2: 비율 유지하며 셀에 맞춤
+        img_formula = f'=IMAGE("{thumb}",2)' if thumb else ''
         rows1.append([
             item.get('rank', ''), TODAY, item.get('published_at', ''), item.get('period', ''),
             item.get('account', ''), item.get('likes', 0), item.get('comments', 0), item.get('views', 0),
             item.get('caption', ''), item.get('hashtags', ''), item.get('url', ''),
-            f'=IMAGE("{thumb}")' if thumb else '',
+            img_formula,
         ])
     if rows1:
         start = len(ws1.get_all_values()) + 1
         ws1.append_rows(rows1, value_input_option='USER_ENTERED')
-        set_row_heights(workbook, ws1, start, start + len(rows1) - 1, 100)
+        set_row_heights(workbook, ws1, start, start + len(rows1) - 1, 150)
+        # 썸네일 열 너비 키우기
+        ws1.spreadsheet.batch_update({'requests': [{
+            'updateDimensionProperties': {
+                'range': {'sheetId': ws1.id, 'dimension': 'COLUMNS', 'startIndex': 11, 'endIndex': 12},
+                'properties': {'pixelSize': 200},
+                'fields': 'pixelSize',
+            }
+        }]})
     print(f'  ✅ 경쟁계정성과 {len(rows1)}행 저장')
 
     # ② 트렌딩 해시태그
@@ -311,15 +348,23 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, buzz_data, viral_dat
     rows4 = []
     for item in viral_data:
         thumb = item.get('thumbnail', '')
+        img_formula = f'=IMAGE("{thumb}",2)' if thumb else ''
         rows4.append([
             item.get('rank', ''), TODAY, item.get('platform', ''), item.get('channel', ''),
             item.get('title', ''), item.get('views', 0), item.get('keyword', ''),
-            item.get('url', ''), f'=IMAGE("{thumb}")' if thumb else '',
+            item.get('url', ''), img_formula,
         ])
     if rows4:
         start = len(ws4.get_all_values()) + 1
         ws4.append_rows(rows4, value_input_option='USER_ENTERED')
-        set_row_heights(workbook, ws4, start, start + len(rows4) - 1, 100)
+        set_row_heights(workbook, ws4, start, start + len(rows4) - 1, 150)
+        ws4.spreadsheet.batch_update({'requests': [{
+            'updateDimensionProperties': {
+                'range': {'sheetId': ws4.id, 'dimension': 'COLUMNS', 'startIndex': 8, 'endIndex': 9},
+                'properties': {'pixelSize': 200},
+                'fields': 'pixelSize',
+            }
+        }]})
     print(f'  ✅ 급상승콘텐츠 {len(rows4)}행 저장')
 
 
