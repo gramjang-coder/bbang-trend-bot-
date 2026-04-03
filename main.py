@@ -79,7 +79,7 @@ def setup_all_dbs():
     setup_db_properties(DB['hashtag'], {
         '수집 날짜':   {'date': {}},
         '플랫폼':      {'select': {}},
-        '게시물 수':   {'number': {}},
+        '게시물수':   {'number': {}},
         '순위':        {'number': {}},
         '원본 링크':   {'url': {}},
         '대표 게시물': {'url': {}},
@@ -359,10 +359,10 @@ def save_hashtags(items):
     print(f'  💾 트렌딩 해시태그 {len(items)}개 저장...')
     for item in items:
         notion_post(DB['hashtag'], {
-            'Name':        {'title': [{'text': {'content': item.get('hashtag', '')}}]},
+            '이름':        {'title': [{'text': {'content': item.get('hashtag', '')}}]},
             '수집 날짜':   {'date': {'start': TODAY}},
             '플랫폼':      {'select': {'name': item.get('platform', 'Instagram')}},
-            '게시물 수':   {'number': item.get('post_count', 0)},
+            '게시물수':   {'number': item.get('post_count', 0)},
             '순위':        {'number': item.get('rank', 0)},
             '원본 링크':   {'url': safe_url(item.get('url'))},
             '대표 게시물': {'url': safe_url(item.get('top_post_url'))},
@@ -373,7 +373,7 @@ def save_competitors(items):
     print(f'  💾 경쟁 계정 성과 {len(items)}개 저장...')
     for item in items:
         notion_post(DB['competitor'], {
-            'Name':         {'title': [{'text': {'content': item.get('account', '')}}]},
+            '이름':         {'title': [{'text': {'content': item.get('account', '')}}]},
             '수집 날짜':    {'date': {'start': TODAY}},
             '기간':         {'select': {'name': item.get('period', '현재')}},
             '캡션':         {'rich_text': [{'text': {'content': item.get('caption', '')}}]},
@@ -390,7 +390,7 @@ def save_keywords(items):
     print(f'  💾 F&B 키워드 버즈량 {len(items)}개 저장...')
     for item in items:
         notion_post(DB['keyword'], {
-            'Name':      {'title': [{'text': {'content': item.get('keyword', '')}}]},
+            '이름':      {'title': [{'text': {'content': item.get('keyword', '')}}]},
             '수집 날짜': {'date': {'start': TODAY}},
             '플랫폼':    {'select': {'name': item.get('platform', '')}},
             '언급량':    {'number': item.get('mention_count', 0)},
@@ -403,7 +403,7 @@ def save_viral(items):
     print(f'  💾 급상승 콘텐츠 {len(items)}개 저장...')
     for item in items:
         notion_post(DB['viral'], {
-            'Name':      {'title': [{'text': {'content': item.get('title', '')}}]},
+            '이름':      {'title': [{'text': {'content': item.get('title', '')}}]},
             '수집 날짜': {'date': {'start': TODAY}},
             '플랫폼':    {'select': {'name': item.get('platform', '')}},
             '계정명':    {'rich_text': [{'text': {'content': item.get('channel', item.get('account', ''))}}]},
@@ -441,4 +441,3 @@ if __name__ == '__main__':
     save_viral(viral_ranked)
  
     print('\n✅ 완료!')
- 
