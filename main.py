@@ -129,43 +129,31 @@ def collect_competitors():
 
     # 발행일자 기준으로 기간 분류
     today_dt = date.today()
-    periods_range = {
-        '현재':               (today_dt - timedelta(days=7),   today_dt),
-        '현재부터 1달 전':    (today_dt - timedelta(days=30),  today_dt),
-        '1년 전':             (today_dt - timedelta(days=372), today_dt - timedelta(days=358)),
-        '1년 1개월 전':       (today_dt - timedelta(days=403), today_dt - timedelta(days=389)),
-        '1년전~1년1개월전 전체': (today_dt - timedelta(days=396), today_dt - timedelta(days=335)),
-    }
+    # 기간을 겹치지 않게 정의 (우선순위 순서대로 매칭)
+    periods_range = [
+        ('현재',                today_dt - timedelta(days=7),   today_dt),
+        ('현재부터 1달 전',     today_dt - timedelta(days=30),  today_dt - timedelta(days=8)),
+        ('1년전~1년1개월전 전체', today_dt - timedelta(days=396), today_dt - timedelta(days=335)),
+        ('1년 전',              today_dt - timedelta(days=372), today_dt - timedelta(days=358)),
+        ('1년 1개월 전',        today_dt - timedelta(days=403), today_dt - timedelta(days=389)),
+    ]
 
     results = []
     for url, post in all_posts.items():
         pub = post.get('published_at', '')
-        if not pub:
-            # 발행일자 없으면 '현재'로 분류
-            p = post.copy()
-            p['period'] = '현재'
-            results.append(p)
-            continue
-        try:
-            pub_dt = date.fromisoformat(pub[:10])
-        except:
-            p = post.copy()
-            p['period'] = '현재'
-            results.append(p)
-            continue
-
-        # 해당되는 모든 기간에 추가
-        matched = False
-        for period_name, (start, end) in periods_range.items():
-            if start <= pub_dt <= end:
-                p = post.copy()
-                p['period'] = period_name
-                results.append(p)
-                matched = True
-        if not matched:
-            p = post.copy()
-            p['period'] = '기타'
-            results.append(p)
+        period_label = '기타'
+        if pub:
+            try:
+                pub_dt = date.fromisoformat(pub[:10])
+                for period_name, start, end in periods_range:
+                    if start <= pub_dt <= end:
+                        period_label = period_name
+                        break
+            except:
+                pass
+        p = post.copy()
+        p['period'] = period_label
+        results.append(p)
 
     # 기간별 카운트 출력
     from collections import Counter as C
@@ -300,31 +288,19 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, buzz_data, viral_dat
     # ① 경쟁 계정 성과
     ws1 = get_or_create_sheet(workbook, '경쟁계정성과', [
         '순위', '수집날짜', '발행일자', '기간', '계정명',
-        '좋아요', '댓글', '조회수', '캡션', '사용해시태그', '원본링크', '썸네일',
+        '좋아요', '댓글', '조회수', '캡션', '사용해시태그', '원본링크',
     ])
     rows1 = []
     for item in competitor_data:
-        thumb = item.get('thumbnail', '')
-        # IMAGE 모드2: 비율 유지하며 셀에 맞춤
-        img_formula = f'=IMAGE("{thumb}",2)' if thumb else ''
+        url = item.get('url', '')
+        link_formula = f'=HYPERLINK("{url}","링크")' if url else ''
         rows1.append([
             item.get('rank', ''), TODAY, item.get('published_at', ''), item.get('period', ''),
             item.get('account', ''), item.get('likes', 0), item.get('comments', 0), item.get('views', 0),
-            item.get('caption', ''), item.get('hashtags', ''), item.get('url', ''),
-            img_formula,
+            item.get('caption', ''), item.get('hashtags', ''), link_formula,
         ])
     if rows1:
-        start = len(ws1.get_all_values()) + 1
         ws1.append_rows(rows1, value_input_option='USER_ENTERED')
-        set_row_heights(workbook, ws1, start, start + len(rows1) - 1, 150)
-        # 썸네일 열 너비 키우기
-        ws1.spreadsheet.batch_update({'requests': [{
-            'updateDimensionProperties': {
-                'range': {'sheetId': ws1.id, 'dimension': 'COLUMNS', 'startIndex': 11, 'endIndex': 12},
-                'properties': {'pixelSize': 200},
-                'fields': 'pixelSize',
-            }
-        }]})
     print(f'  ✅ 경쟁계정성과 {len(rows1)}행 저장')
 
     # ② 트렌딩 해시태그
