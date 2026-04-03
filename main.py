@@ -3,7 +3,7 @@ import json
 import requests
 from datetime import date
 from anthropic import Anthropic
-
+ 
 # ── 환경변수 ──────────────────────────────────────────────────────
 NOTION_KEY    = os.environ['NOTION_API_KEY']
 APIFY_KEY     = os.environ['APIFY_API_KEY']
@@ -11,9 +11,9 @@ ANTHROPIC_KEY = os.environ['ANTHROPIC_API_KEY']
 YOUTUBE_KEY   = os.environ['YOUTUBE_API_KEY']
 NAVER_ID      = os.environ['NAVER_CLIENT_ID']
 NAVER_SECRET  = os.environ['NAVER_CLIENT_SECRET']
-
+ 
 TODAY = date.today().isoformat()
-
+ 
 # ── Notion DB IDs ─────────────────────────────────────────────────
 DB = {
     'hashtag':    '3377ed94f69880e29ef0c905265f0514',  # 트렌딩 해시태그
@@ -21,7 +21,7 @@ DB = {
     'keyword':    '3377ed94f69880cfbfc5ce6d36ca61ae',  # F&B 키워드 버즈량
     'viral':      '3377ed94f698803c9c0bdae3115e9156',  # 급상승 콘텐츠
 }
-
+ 
 # ── 경쟁 계정 리스트 (추가/삭제 여기서) ─────────────────────────
 COMPETITOR_ACCOUNTS = [
     'knewnew.official',
@@ -31,19 +31,82 @@ COMPETITOR_ACCOUNTS = [
     'daily_fnb',
     'idea82people',
 ]
-
+ 
 # ── 수집 해시태그 키워드 ──────────────────────────────────────────
 HASHTAGS = [
     '빵', '베이커리', '소금빵', '크루아상', '디저트', '식빵',
     '도넛', '마카롱', '케이크', '빵집', '브런치카페', '카페투어',
     'bakery', 'bread', 'croissant', 'sourdough', 'pastry',
 ]
-
+ 
 BUZZ_KEYWORDS = ['빵', '베이커리', '소금빵', '크루아상', '디저트카페', '빵집투어', '브런치']
-
-
+ 
+ 
+# ── Notion DB 속성 초기화 ─────────────────────────────────────────
+NOTION_HEADERS = {
+    'Authorization': f'Bearer {NOTION_KEY}',
+    'Notion-Version': '2022-06-28',
+    'Content-Type': 'application/json',
+}
+ 
+def setup_db_properties(db_id, properties):
+    """DB에 없는 속성만 추가"""
+    # 현재 속성 조회
+    resp = requests.get(f'https://api.notion.com/v1/databases/{db_id}', headers=NOTION_HEADERS)
+    existing = set(resp.json().get('properties', {}).keys())
+    
+    # 없는 속성만 추가
+    new_props = {k: v for k, v in properties.items() if k not in existing}
+    if new_props:
+        requests.patch(
+            f'https://api.notion.com/v1/databases/{db_id}',
+            headers=NOTION_HEADERS,
+            json={'properties': new_props},
+        )
+ 
+def setup_all_dbs():
+    print('🔧 Notion DB 속성 초기화 중...')
+    setup_db_properties(DB['hashtag'], {
+        '수집 날짜':   {'date': {}},
+        '플랫폼':      {'select': {}},
+        '게시물 수':   {'number': {}},
+        '순위':        {'number': {}},
+        '원본 링크':   {'url': {}},
+        '대표 게시물': {'url': {}},
+    })
+    setup_db_properties(DB['competitor'], {
+        '수집 날짜':    {'date': {}},
+        '캡션':         {'rich_text': {}},
+        '좋아요':       {'number': {}},
+        '댓글':         {'number': {}},
+        '조회수':       {'number': {}},
+        '순위':         {'number': {}},
+        '원본 링크':    {'url': {}},
+        '사용 해시태그':{'rich_text': {}},
+    })
+    setup_db_properties(DB['keyword'], {
+        '수집 날짜': {'date': {}},
+        '플랫폼':    {'select': {}},
+        '언급량':    {'number': {}},
+        '순위':      {'number': {}},
+        '원본 링크': {'url': {}},
+    })
+    setup_db_properties(DB['viral'], {
+        '수집 날짜': {'date': {}},
+        '플랫폼':    {'select': {}},
+        '계정명':    {'rich_text': {}},
+        '조회수':    {'number': {}},
+        '순위':      {'number': {}},
+        '원본 링크': {'url': {}},
+        '키워드':    {'rich_text': {}},
+    })
+    print('  → 완료')
+ 
+ 
 # ── Apify 실행 ────────────────────────────────────────────────────
 def run_apify(actor_id, input_data, timeout=180):
+    # Apify API는 액터 ID에서 '/'를 '~'로 변환 필요
+    actor_id = actor_id.replace('/', '~')
     url = f'https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items'
     resp = requests.post(
         url,
@@ -53,8 +116,8 @@ def run_apify(actor_id, input_data, timeout=180):
     )
     resp.raise_for_status()
     return resp.json()
-
-
+ 
+ 
 # ── 1. 트렌딩 해시태그 수집 (인스타그램) ─────────────────────────
 def collect_hashtags():
     print('📌 해시태그 수집 중...')
@@ -78,8 +141,8 @@ def collect_hashtags():
             print(f'  ⚠️ #{tag} 실패: {e}')
     print(f'  → {len(results)}개 수집')
     return results
-
-
+ 
+ 
 # ── 2. 경쟁 계정 성과 수집 ────────────────────────────────────────
 def collect_competitors():
     print('👥 경쟁 계정 수집 중...')
@@ -105,8 +168,8 @@ def collect_competitors():
         print(f'  ⚠️ 경쟁 계정 실패: {e}')
     print(f'  → {len(results)}개 수집')
     return results
-
-
+ 
+ 
 # ── 3. 트위터 버즈량 수집 ─────────────────────────────────────────
 def collect_twitter_buzz():
     print('🐦 트위터 버즈량 수집 중...')
@@ -134,8 +197,8 @@ def collect_twitter_buzz():
         print(f'  ⚠️ 트위터 실패: {e}')
     print(f'  → {len(results)}개 수집')
     return results
-
-
+ 
+ 
 # ── 4. 유튜브 급상승 수집 ─────────────────────────────────────────
 def collect_youtube():
     print('📺 유튜브 수집 중...')
@@ -170,8 +233,8 @@ def collect_youtube():
             print(f'  ⚠️ 유튜브 {kw} 실패: {e}')
     print(f'  → {len(results)}개 수집')
     return results
-
-
+ 
+ 
 # ── 5. 네이버 트렌드 수집 ─────────────────────────────────────────
 def collect_naver():
     print('🔍 네이버 트렌드 수집 중...')
@@ -207,29 +270,29 @@ def collect_naver():
         print(f'  ⚠️ 네이버 실패: {e}')
     print(f'  → {len(results)}개 수집')
     return results
-
-
+ 
+ 
 # ── 6. Claude로 순위 산정 ─────────────────────────────────────────
 def rank_with_claude(category, items):
     if not items:
         return []
     print(f'🤖 Claude 순위 산정: {category}')
     client = Anthropic(api_key=ANTHROPIC_KEY)
-
+ 
     prompt = f"""아래는 오늘({TODAY}) 수집된 [{category}] 데이터입니다.
 상위 30개를 선정해 순위를 매기고, 원본 JSON 배열에 "rank" 필드(1~30)를 추가해서 반환하세요.
-
+ 
 순위 기준:
 - 트렌딩 해시태그: post_count 높은 순
 - 경쟁 계정 성과: likes + comments + views 합산 높은 순
 - F&B 키워드 버즈량: mention_count 높은 순
 - 급상승 콘텐츠: views 높은 순 (같으면 최신 순)
-
+ 
 데이터:
 {json.dumps(items, ensure_ascii=False, indent=2)}
-
+ 
 JSON 배열만 반환. 다른 텍스트 없이."""
-
+ 
     resp = client.messages.create(
         model='claude-sonnet-4-20250514',
         max_tokens=4000,
@@ -241,29 +304,25 @@ JSON 배열만 반환. 다른 텍스트 없이."""
         if text.startswith('json'):
             text = text[4:]
     return json.loads(text.strip())
-
-
+ 
+ 
 # ── 7. Notion 저장 헬퍼 ───────────────────────────────────────────
 def notion_post(db_id, properties):
     resp = requests.post(
         'https://api.notion.com/v1/pages',
-        headers={
-            'Authorization': f'Bearer {NOTION_KEY}',
-            'Notion-Version': '2022-06-28',
-            'Content-Type': 'application/json',
-        },
+        headers=NOTION_HEADERS,
         json={'parent': {'database_id': db_id}, 'properties': properties},
         timeout=30,
     )
     if resp.status_code != 200:
         print(f'  ⚠️ Notion 저장 실패: {resp.status_code} {resp.text[:100]}')
-
-
+ 
+ 
 def safe_url(val):
     """빈 문자열이나 None은 None으로 반환 (Notion URL 필드는 null 허용)"""
     return val if val and val.startswith('http') else None
-
-
+ 
+ 
 def save_hashtags(items):
     print(f'  💾 트렌딩 해시태그 {len(items)}개 저장...')
     for item in items:
@@ -276,8 +335,8 @@ def save_hashtags(items):
             '원본 링크':   {'url': safe_url(item.get('url'))},
             '대표 게시물': {'url': safe_url(item.get('top_post_url'))},
         })
-
-
+ 
+ 
 def save_competitors(items):
     print(f'  💾 경쟁 계정 성과 {len(items)}개 저장...')
     for item in items:
@@ -292,8 +351,8 @@ def save_competitors(items):
             '원본 링크':    {'url': safe_url(item.get('url'))},
             '사용 해시태그':{'rich_text': [{'text': {'content': item.get('hashtags', '')}}]},
         })
-
-
+ 
+ 
 def save_keywords(items):
     print(f'  💾 F&B 키워드 버즈량 {len(items)}개 저장...')
     for item in items:
@@ -305,8 +364,8 @@ def save_keywords(items):
             '순위':      {'number': item.get('rank', 0)},
             '원본 링크': {'url': safe_url(item.get('url'))},
         })
-
-
+ 
+ 
 def save_viral(items):
     print(f'  💾 급상승 콘텐츠 {len(items)}개 저장...')
     for item in items:
@@ -320,31 +379,32 @@ def save_viral(items):
             '원본 링크': {'url': safe_url(item.get('url'))},
             '키워드':    {'rich_text': [{'text': {'content': item.get('keyword', '')}}]},
         })
-
-
+ 
+ 
 # ── 메인 ──────────────────────────────────────────────────────────
 if __name__ == '__main__':
     print(f'🚀 트렌드 수집 시작: {TODAY}\n')
-
+    setup_all_dbs()
+ 
     # 수집
     hashtag_data    = collect_hashtags()
     competitor_data = collect_competitors()
     buzz_data       = collect_twitter_buzz() + collect_naver()
     viral_data      = collect_youtube()
-
+ 
     print(f'\n📊 수집 완료 — 해시태그 {len(hashtag_data)} | 경쟁계정 {len(competitor_data)} | 버즈량 {len(buzz_data)} | 급상승 {len(viral_data)}\n')
-
+ 
     # Claude 순위 산정
     hashtag_ranked    = rank_with_claude('트렌딩 해시태그', hashtag_data)
     competitor_ranked = rank_with_claude('경쟁 계정 성과', competitor_data)
     buzz_ranked       = rank_with_claude('F&B 키워드 버즈량', buzz_data)
     viral_ranked      = rank_with_claude('급상승 콘텐츠', viral_data)
-
+ 
     # Notion 저장
     print('\n💾 Notion 저장 중...')
     save_hashtags(hashtag_ranked)
     save_competitors(competitor_ranked)
     save_keywords(buzz_ranked)
     save_viral(viral_ranked)
-
+ 
     print('\n✅ 완료!')
