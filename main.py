@@ -53,16 +53,26 @@ def setup_db_properties(db_id, properties):
     """DB에 없는 속성만 추가"""
     # 현재 속성 조회
     resp = requests.get(f'https://api.notion.com/v1/databases/{db_id}', headers=NOTION_HEADERS)
+    if resp.status_code != 200:
+        print(f'  ⚠️ DB 조회 실패 ({db_id[:8]}...): {resp.status_code} {resp.text[:200]}')
+        return
     existing = set(resp.json().get('properties', {}).keys())
-    
+ 
     # 없는 속성만 추가
     new_props = {k: v for k, v in properties.items() if k not in existing}
     if new_props:
-        requests.patch(
+        print(f'  → 추가할 속성: {list(new_props.keys())}')
+        r = requests.patch(
             f'https://api.notion.com/v1/databases/{db_id}',
             headers=NOTION_HEADERS,
             json={'properties': new_props},
         )
+        if r.status_code != 200:
+            print(f'  ⚠️ 속성 추가 실패: {r.status_code} {r.text[:300]}')
+        else:
+            print(f'  ✅ 속성 추가 완료')
+    else:
+        print(f'  → 이미 모든 속성 존재')
  
 def setup_all_dbs():
     print('🔧 Notion DB 속성 초기화 중...')
@@ -337,7 +347,7 @@ def notion_post(db_id, properties):
         timeout=30,
     )
     if resp.status_code != 200:
-        print(f'  ⚠️ Notion 저장 실패: {resp.status_code} {resp.text[:100]}')
+        print(f'  ⚠️ Notion 저장 실패: {resp.status_code} {resp.text[:300]}')
  
  
 def safe_url(val):
@@ -430,5 +440,6 @@ if __name__ == '__main__':
     save_keywords(buzz_ranked)
     save_viral(viral_ranked)
  
+    print('\n✅ 완료!')
     print('\n✅ 완료!')
  
