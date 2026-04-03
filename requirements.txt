@@ -1,2 +1,4 @@
-anthropic
 requests
+gspread
+google-auth
+ 
