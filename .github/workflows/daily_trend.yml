@@ -1,5 +1,3 @@
-.github/workflows/daily_trend.yml
-/
 name: Daily Trend Collector
 
 on:
