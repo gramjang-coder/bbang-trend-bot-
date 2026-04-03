@@ -86,6 +86,7 @@ def setup_all_dbs():
     })
     setup_db_properties(DB['competitor'], {
         '수집 날짜':    {'date': {}},
+        '발행일자':     {'rich_text': {}},
         '기간':         {'select': {}},
         '캡션':         {'rich_text': {}},
         '좋아요':       {'number': {}},
@@ -129,28 +130,45 @@ def run_apify(actor_id, input_data, timeout=180):
     return resp.json()
  
  
-# ── 1. 트렌딩 해시태그 수집 (인스타그램) ─────────────────────────
-def collect_hashtags():
-    print('📌 해시태그 수집 중...')
+# ── 1. 경쟁사 게시물에서 해시태그 집계 ──────────────────────────
+def extract_hashtags_from_competitors(competitor_data):
+    """경쟁사 게시물의 해시태그를 집계해서 상위 30개 반환"""
+    print('📌 경쟁사 해시태그 집계 중...')
+    from collections import Counter
+    counter = Counter()
+    post_examples = {}  # 해시태그별 대표 게시물 URL
+ 
+    for item in competitor_data:
+        tags_raw = item.get('hashtags', '') or ''
+        post_url = item.get('url', '')
+        period = item.get('period', '')
+        # 문자열로 저장된 경우 파싱
+        if isinstance(tags_raw, str):
+            tags = [t.strip() for t in tags_raw.split(',') if t.strip()]
+        else:
+            tags = tags_raw
+ 
+        for tag in tags:
+            tag = tag.strip().lstrip('#')
+            if not tag:
+                continue
+            key = f'#{tag}'
+            counter[key] += 1
+            if key not in post_examples:
+                post_examples[key] = post_url
+ 
     results = []
-    for tag in HASHTAGS:
-        try:
-            data = run_apify('apify/instagram-hashtag-scraper', {
-                'hashtags': [tag],
-                'resultsLimit': 10,
-            })
-            if data:
-                item = data[0]
-                results.append({
-                    'hashtag': f'#{tag}',
-                    'post_count': item.get('postsCount', 0),
-                    'platform': 'Instagram',
-                    'url': f'https://www.instagram.com/explore/tags/{tag}/',
-                    'top_post_url': item.get('url', ''),
-                })
-        except Exception as e:
-            print(f'  ⚠️ #{tag} 실패: {e}')
-    print(f'  → {len(results)}개 수집')
+    for rank, (tag, count) in enumerate(counter.most_common(30), 1):
+        results.append({
+            'hashtag': tag,
+            'post_count': count,
+            'platform': 'Instagram (경쟁사)',
+            'url': f'https://www.instagram.com/explore/tags/{tag.lstrip("#")}/',
+            'top_post_url': post_examples.get(tag, ''),
+            'rank': rank,
+        })
+ 
+    print(f'  → {len(results)}개 해시태그 집계 완료')
     return results
  
  
@@ -158,10 +176,12 @@ def collect_hashtags():
 from datetime import timedelta
  
 def _fetch_competitor_posts(label, newer_than=None, older_than=None):
+    # 긴 기간 구간은 더 많은 게시물 수집
+    limit = 30 if label in ('1년전~1년1개월전 전체', '현재부터 1달 전') else 10
     params = {
         'directUrls': [f'https://www.instagram.com/{acc}/' for acc in COMPETITOR_ACCOUNTS],
         'resultsType': 'posts',
-        'resultsLimit': 10,
+        'resultsLimit': limit,
     }
     if newer_than:
         params['onlyPostsNewerThan'] = newer_than
@@ -169,17 +189,63 @@ def _fetch_competitor_posts(label, newer_than=None, older_than=None):
         params['onlyPostsOlderThan'] = older_than
     data = run_apify('apify/instagram-scraper', params)
     results = []
+    seen_urls = set()
     for item in data:
+        url = item.get('url', '')
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+ 
+        # 캡션 필드명 다양하게 시도
+        caption = (
+            item.get('caption') or
+            item.get('text') or
+            item.get('description') or
+            item.get('accessibility_caption') or ''
+        )
+ 
+        # 해시태그: 리스트 또는 캡션에서 추출
+        hashtags_raw = item.get('hashtags') or []
+        if not hashtags_raw and caption:
+            import re
+            hashtags_raw = re.findall(r'#(\w+)', caption)
+ 
+        # 발행일자 파싱
+        published = (
+            item.get('timestamp') or
+            item.get('taken_at_timestamp') or
+            item.get('takenAtTimestamp') or
+            item.get('date') or
+            item.get('publishedAt') or ''
+        )
+        # Unix timestamp면 날짜로 변환
+        if isinstance(published, (int, float)) and published > 1000000000:
+            from datetime import datetime
+            published = datetime.utcfromtimestamp(published).strftime('%Y-%m-%d')
+        elif isinstance(published, str) and 'T' in published:
+            published = published[:10]
+ 
+        # 썸네일 이미지 URL
+        thumbnail = (
+            item.get('displayUrl') or
+            item.get('thumbnailUrl') or
+            item.get('thumbnail_url') or
+            item.get('imageUrl') or
+            item.get('previewUrl') or ''
+        )
+ 
         results.append({
-            'account': item.get('ownerUsername', ''),
-            'caption': (item.get('caption', '') or '')[:200],
-            'likes': item.get('likesCount', 0),
-            'comments': item.get('commentsCount', 0),
-            'views': item.get('videoViewCount', 0),
-            'url': item.get('url', ''),
-            'hashtags': ', '.join((item.get('hashtags', []) or [])[:10]),
+            'account': item.get('ownerUsername', '') or item.get('username', ''),
+            'caption': caption[:200],
+            'likes': item.get('likesCount', 0) or item.get('likes', 0),
+            'comments': item.get('commentsCount', 0) or item.get('comments', 0),
+            'views': item.get('videoViewCount', 0) or item.get('videoPlayCount', 0) or 0,
+            'url': url,
+            'hashtags': ', '.join((hashtags_raw or [])[:10]),
             'platform': 'Instagram',
             'period': label,
+            'published_at': str(published) if published else '',
+            'thumbnail': thumbnail,
         })
     return results
  
@@ -202,7 +268,7 @@ def collect_competitors():
          (today - timedelta(days=403)).isoformat(), (today - timedelta(days=389)).isoformat()),
         # 1년 전 ~ 1년 1개월 전 사이 전체 (작년 해당 월 게시글 모두)
         ('1년전~1년1개월전 전체',
-         (today - timedelta(days=396)).isoformat(), (today - timedelta(days=365)).isoformat()),
+         (today - timedelta(days=396)).isoformat(), (today - timedelta(days=335)).isoformat()),
     ]
     results = []
     for label, newer, older in periods:
@@ -372,18 +438,44 @@ def save_hashtags(items):
 def save_competitors(items):
     print(f'  💾 경쟁 계정 성과 {len(items)}개 저장...')
     for item in items:
-        notion_post(DB['competitor'], {
-            '이름':         {'title': [{'text': {'content': item.get('account', '')}}]},
-            '수집 날짜':    {'date': {'start': TODAY}},
-            '기간':         {'select': {'name': item.get('period', '현재')}},
-            '캡션':         {'rich_text': [{'text': {'content': item.get('caption', '')}}]},
-            '좋아요':       {'number': item.get('likes', 0)},
-            '댓글':         {'number': item.get('comments', 0)},
-            '조회수':       {'number': item.get('views', 0)},
-            '순위':         {'number': item.get('rank', 0)},
-            '원본 링크':    {'url': safe_url(item.get('url'))},
-            '사용 해시태그':{'rich_text': [{'text': {'content': item.get('hashtags', '')}}]},
-        })
+        thumbnail = safe_url(item.get('thumbnail'))
+ 
+        # 페이지 본문에 썸네일 이미지 블록 추가
+        children = []
+        if thumbnail:
+            children = [{
+                'object': 'block',
+                'type': 'image',
+                'image': {
+                    'type': 'external',
+                    'external': {'url': thumbnail}
+                }
+            }]
+ 
+        resp = requests.post(
+            'https://api.notion.com/v1/pages',
+            headers=NOTION_HEADERS,
+            json={
+                'parent': {'database_id': DB['competitor']},
+                'properties': {
+                    '이름':         {'title': [{'text': {'content': item.get('account', '')}}]},
+                    '수집 날짜':    {'date': {'start': TODAY}},
+                    '발행일자':     {'rich_text': [{'text': {'content': item.get('published_at', '')}}]},
+                    '기간':         {'select': {'name': item.get('period', '현재')}},
+                    '캡션':         {'rich_text': [{'text': {'content': item.get('caption', '')}}]},
+                    '좋아요':       {'number': item.get('likes', 0)},
+                    '댓글':         {'number': item.get('comments', 0)},
+                    '조회수':       {'number': item.get('views', 0)},
+                    '순위':         {'number': item.get('rank', 0)},
+                    '원본 링크':    {'url': safe_url(item.get('url'))},
+                    '사용 해시태그':{'rich_text': [{'text': {'content': item.get('hashtags', '')}}]},
+                },
+                'children': children,
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            print(f'  ⚠️ Notion 저장 실패: {resp.status_code} {resp.text[:300]}')
  
  
 def save_keywords(items):
@@ -419,16 +511,16 @@ if __name__ == '__main__':
     print(f'🚀 트렌드 수집 시작: {TODAY}\n')
     setup_all_dbs()
  
-    # 수집
-    hashtag_data    = collect_hashtags()
+    # 수집 (경쟁사 먼저 → 해시태그 집계)
     competitor_data = collect_competitors()
+    hashtag_data    = extract_hashtags_from_competitors(competitor_data)
     buzz_data       = collect_twitter_buzz() + collect_naver()
     viral_data      = collect_youtube()
  
     print(f'\n📊 수집 완료 — 해시태그 {len(hashtag_data)} | 경쟁계정 {len(competitor_data)} | 버즈량 {len(buzz_data)} | 급상승 {len(viral_data)}\n')
  
-    # Claude 순위 산정
-    hashtag_ranked    = rank_items('트렌딩 해시태그', hashtag_data)
+    # 순위 산정 (해시태그는 이미 rank 포함, 나머지만 정렬)
+    hashtag_ranked    = hashtag_data  # 이미 집계 시 순위 매김
     competitor_ranked = rank_items('경쟁 계정 성과', competitor_data)
     buzz_ranked       = rank_items('F&B 키워드 버즈량', buzz_data)
     viral_ranked      = rank_items('급상승 콘텐츠', viral_data)
@@ -441,3 +533,4 @@ if __name__ == '__main__':
     save_viral(viral_ranked)
  
     print('\n✅ 완료!')
+ 
