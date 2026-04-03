@@ -175,7 +175,7 @@ def collect_twitter_buzz():
     print('🐦 트위터 버즈량 수집 중...')
     results = []
     try:
-        data = run_apify('apify/twitter-scraper', {
+        data = run_apify('quacker/twitter-scraper', {
             'searchTerms': BUZZ_KEYWORDS,
             'maxItems': 100,
             'sort': 'Latest',
@@ -279,31 +279,48 @@ def rank_with_claude(category, items):
     print(f'🤖 Claude 순위 산정: {category}')
     client = Anthropic(api_key=ANTHROPIC_KEY)
  
+    # 최대 30개만 전달 (JSON 파싱 안정성)
+    items = items[:30]
+ 
     prompt = f"""아래는 오늘({TODAY}) 수집된 [{category}] 데이터입니다.
-상위 30개를 선정해 순위를 매기고, 원본 JSON 배열에 "rank" 필드(1~30)를 추가해서 반환하세요.
+순위를 매기고, 각 항목에 "rank" 필드(1부터 시작)를 추가해서 JSON 배열로만 반환하세요.
  
 순위 기준:
 - 트렌딩 해시태그: post_count 높은 순
 - 경쟁 계정 성과: likes + comments + views 합산 높은 순
 - F&B 키워드 버즈량: mention_count 높은 순
-- 급상승 콘텐츠: views 높은 순 (같으면 최신 순)
+- 급상승 콘텐츠: views 높은 순
  
 데이터:
-{json.dumps(items, ensure_ascii=False, indent=2)}
+{json.dumps(items, ensure_ascii=False)}
  
-JSON 배열만 반환. 다른 텍스트 없이."""
+반드시 JSON 배열([...])만 반환. 설명 텍스트, 마크다운 코드블록 없이."""
  
     resp = client.messages.create(
         model='claude-sonnet-4-20250514',
-        max_tokens=4000,
+        max_tokens=8000,
         messages=[{'role': 'user', 'content': prompt}],
     )
     text = resp.content[0].text.strip()
+ 
+    # 코드블록 제거
     if '```' in text:
-        text = text.split('```')[1]
-        if text.startswith('json'):
-            text = text[4:]
-    return json.loads(text.strip())
+        parts = text.split('```')
+        for part in parts:
+            part = part.strip()
+            if part.startswith('json'):
+                part = part[4:].strip()
+            if part.startswith('['):
+                text = part
+                break
+ 
+    # [ ] 범위만 추출
+    start = text.find('[')
+    end = text.rfind(']')
+    if start != -1 and end != -1:
+        text = text[start:end+1]
+ 
+    return json.loads(text)
  
  
 # ── 7. Notion 저장 헬퍼 ───────────────────────────────────────────
