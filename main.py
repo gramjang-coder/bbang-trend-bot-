@@ -16,10 +16,10 @@ TODAY = date.today().isoformat()
  
 # ── Notion DB IDs ─────────────────────────────────────────────────
 DB = {
-    'hashtag':    '3377ed94f69880e29ef0c905265f0514',  # 트렌딩 해시태그
-    'competitor': '3377ed94f69880c1b899c7b2ca598aab',  # 경쟁 계정 성과
-    'keyword':    '3377ed94f69880cfbfc5ce6d36ca61ae',  # F&B 키워드 버즈량
-    'viral':      '3377ed94f698803c9c0bdae3115e9156',  # 급상승 콘텐츠
+    'hashtag':    '3377ed94f6988051bbe4c9009e728452',  # 트렌딩 해시태그
+    'competitor': '3377ed94f698805a8368e5f1ab379723',  # 경쟁 계정 성과
+    'keyword':    '3377ed94f69880dea57dd5bc9cda2054',  # F&B 키워드 버즈량
+    'viral':      '3377ed94f698800f974ad4c87881bb53',  # 급상승 콘텐츠
 }
  
 # ── 경쟁 계정 리스트 (추가/삭제 여기서) ─────────────────────────
@@ -440,6 +440,5 @@ if __name__ == '__main__':
     save_keywords(buzz_ranked)
     save_viral(viral_ranked)
  
-    print('\n✅ 완료!')
     print('\n✅ 완료!')
  
