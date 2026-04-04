@@ -326,11 +326,11 @@ YOUTUBE_TARGET     = 30       # 목표 수집 개수
 
 def collect_youtube():
     print('📺 유튜브 급상승 수집 중...')
+    published_after = (date.today() - timedelta(days=3)).isoformat() + 'T00:00:00Z'
     candidate_ids = []
     id_to_meta = {}
 
-    # 1단계: 키워드별 검색 (날짜 필터 없이 조회수순)
-    for kw in YOUTUBE_KEYWORDS:
+    for kw in ['빵', '떡', '여행']:
         try:
             resp = requests.get(
                 'https://www.googleapis.com/youtube/v3/search',
@@ -338,21 +338,20 @@ def collect_youtube():
                     'key': YOUTUBE_KEY,
                     'q': kw,
                     'type': 'video',
-                    'order': 'viewCount',
+                    'order': 'date',
                     'regionCode': 'KR',
                     'relevanceLanguage': 'ko',
                     'maxResults': 50,
                     'part': 'snippet',
+                    'publishedAfter': published_after,
                 },
                 timeout=30,
             )
             data = resp.json()
             if 'error' in data:
-                print(f'  ⚠️ 검색 API 에러: {data["error"].get("message","")}')
+                print(f'  ⚠️ [{kw}] 에러: {data["error"].get("message","")}')
                 continue
-            items = data.get('items', [])
-            print(f'  키워드 [{kw}]: {len(items)}개 검색됨')
-            for item in items:
+            for item in data.get('items', []):
                 vid_id = item.get('id', {}).get('videoId')
                 if not vid_id or vid_id in id_to_meta:
                     continue
@@ -366,84 +365,70 @@ def collect_youtube():
                     'platform':     'YouTube',
                     'thumbnail':    item['snippet'].get('thumbnails', {}).get('high', {}).get('url', ''),
                 }
+            print(f'  [{kw}]: {len(data.get("items", []))}개 검색')
         except Exception as e:
-            print(f'  ⚠️ 검색 실패 ({kw}): {e}')
+            print(f'  ⚠️ [{kw}] 실패: {e}')
 
     print(f'  → 후보 {len(candidate_ids)}개, 조회수/길이 확인 중...')
     if not candidate_ids:
-        print('  ⚠️ 후보 없음 - YouTube API 키 또는 할당량 확인 필요')
         return []
 
-    # 2단계: 조회수 + 영상 길이 조회
-    results = []
+    # 조회수 + 길이 조회
+    all_videos = []
     for i in range(0, len(candidate_ids), 50):
         batch = candidate_ids[i:i+50]
         try:
             resp = requests.get(
                 'https://www.googleapis.com/youtube/v3/videos',
-                params={
-                    'key': YOUTUBE_KEY,
-                    'id': ','.join(batch),
-                    'part': 'statistics,contentDetails',
-                },
+                params={'key': YOUTUBE_KEY, 'id': ','.join(batch), 'part': 'statistics,contentDetails'},
                 timeout=30,
             )
             data = resp.json()
             if 'error' in data:
                 print(f'  ⚠️ videos API 에러: {data["error"].get("message","")}')
                 continue
-            items = data.get('items', [])
-            print(f'  videos API 응답: {len(items)}개')
-            for s in items:
+            for s in data.get('items', []):
                 vid_id = s['id']
                 views = int(s.get('statistics', {}).get('viewCount', 0))
-                duration_str = s.get('contentDetails', {}).get('duration', 'PT0S')
-                h = int(re.search(r'(\d+)H', duration_str).group(1)) if re.search(r'(\d+)H', duration_str) else 0
-                m = int(re.search(r'(\d+)M', duration_str).group(1)) if re.search(r'(\d+)M', duration_str) else 0
-                sec = int(re.search(r'(\d+)S', duration_str).group(1)) if re.search(r'(\d+)S', duration_str) else 0
+                dur = s.get('contentDetails', {}).get('duration', 'PT0S')
+                h = int(re.search(r'(\d+)H', dur).group(1)) if re.search(r'(\d+)H', dur) else 0
+                m = int(re.search(r'(\d+)M', dur).group(1)) if re.search(r'(\d+)M', dur) else 0
+                sec = int(re.search(r'(\d+)S', dur).group(1)) if re.search(r'(\d+)S', dur) else 0
                 total_sec = h * 3600 + m * 60 + sec
-                is_short = total_sec <= 60
-
                 meta = id_to_meta[vid_id].copy()
                 meta['views'] = views
-                meta['is_short'] = is_short
-                results.append(meta)
+                meta['is_short'] = total_sec <= 60
+                all_videos.append(meta)
         except Exception as e:
             print(f'  ⚠️ videos API 실패: {e}')
 
-    print(f'  → 전체 {len(results)}개 수집됨')
+    print(f'  → 전체 {len(all_videos)}개 수집')
 
-    # 한국 채널 필터
-    def has_korean(text):
-        return bool(re.search(r'[가-힣]', text or ''))
-    korean = [r for r in results if has_korean(r.get('title','')) or has_korean(r.get('channel',''))]
-    print(f'  → 한국 채널 {len(korean)}개')
-
-    # 최근 3일 + 조회수 필터
-    cutoff = (date.today() - timedelta(days=YOUTUBE_DAYS)).isoformat()
-    filtered = [r for r in korean if r.get('published_at','') >= cutoff and r['views'] >= 10000]
-    print(f'  → 최근 {YOUTUBE_DAYS}일 + 1만뷰 이상: {len(filtered)}개')
+    # 한국어 채널/제목 필터
+    korean = [v for v in all_videos if re.search(r'[가-힣]', v.get('title','') + v.get('channel',''))]
+    print(f'  → 한국 콘텐츠 {len(korean)}개')
 
     # 조회수 내림차순
-    filtered.sort(key=lambda x: x['views'], reverse=True)
+    korean.sort(key=lambda x: x['views'], reverse=True)
 
-    # 채널 중복 제거
-    seen_ch = set()
-    deduped = []
-    for r in filtered:
-        ch = r.get('channel','')
-        if ch not in seen_ch:
-            seen_ch.add(ch)
-            deduped.append(r)
-        if len(deduped) >= YOUTUBE_TARGET:
-            break
+    # 롱폼 20개, 숏폼 10개 (채널 중복 제거)
+    def pick(items, n):
+        seen = set()
+        out = []
+        for v in items:
+            ch = v.get('channel', '')
+            if ch not in seen:
+                seen.add(ch)
+                out.append(v)
+            if len(out) >= n:
+                break
+        return out
 
-    # 부족해도 날짜 필터는 유지 (오래된 영상 절대 포함 안 함)
-    if len(deduped) < YOUTUBE_TARGET:
-        print(f'  → 조건 충족 영상 {len(deduped)}개 (최근 {YOUTUBE_DAYS}일 + 20만뷰 기준)')
-
-    print(f'  → 최종 {len(deduped)}개 (롱폼/숏폼 포함)')
-    return deduped
+    longform = pick([v for v in korean if not v.get('is_short')], 20)
+    shorts   = pick([v for v in korean if v.get('is_short')], 10)
+    final = longform + shorts
+    print(f'  → 롱폼 {len(longform)}개 + 숏폼 {len(shorts)}개 = 최종 {len(final)}개')
+    return final
 
 
 def rank_items(category, items):
