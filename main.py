@@ -73,7 +73,7 @@ def run_apify(actor_id, input_data, timeout=240):
     url = f'https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items'
     resp = requests.post(
         url,
-        params={'token': APIFY_KEY, 'timeout': 180, 'memory': 512},
+        params={'token': APIFY_KEY, 'timeout': 120, 'memory': 256},
         json=input_data,
         timeout=timeout,
     )
@@ -132,19 +132,30 @@ def _within_days(pub_str, min_days, max_days, today):
 
 
 def fetch_posts_apify(label, newer_than=None, older_than=None, limit=30):
-    params = {
-        'directUrls': [f'https://www.instagram.com/{acc}/' for acc in COMPETITOR_ACCOUNTS],
-        'resultsType': 'posts',
-        'resultsLimit': limit,
-    }
-    if newer_than:
-        params['onlyPostsNewerThan'] = newer_than
-    if older_than:
-        params['onlyPostsOlderThan'] = older_than
-    data = run_apify('apify/instagram-scraper', params)
+    # 계정 10개씩 배치 처리 (400 에러 방지)
+    BATCH_SIZE = 10
+    all_data = []
+    accounts = COMPETITOR_ACCOUNTS
+    for i in range(0, len(accounts), BATCH_SIZE):
+        batch = accounts[i:i+BATCH_SIZE]
+        params = {
+            'directUrls': [f'https://www.instagram.com/{acc}/' for acc in batch],
+            'resultsType': 'posts',
+            'resultsLimit': limit,
+        }
+        if newer_than:
+            params['onlyPostsNewerThan'] = newer_than
+        if older_than:
+            params['onlyPostsOlderThan'] = older_than
+        try:
+            data = run_apify('apify/instagram-scraper', params)
+            all_data.extend(data)
+        except Exception as e:
+            print(f'  ⚠️ 배치 {i//BATCH_SIZE+1} 실패: {e}')
+
     seen = set()
     results = []
-    for item in data:
+    for item in all_data:
         url = item.get('url', '')
         if url in seen:
             continue
@@ -323,7 +334,8 @@ def collect_youtube():
                         'thumbnail':    item['snippet'].get('thumbnails', {}).get('high', {}).get('url', ''),
                     }
         except Exception as e:
-            print(f'  ⚠️ 검색 실패 ({kw}): {e}')
+            print(f'  ⚠️ 유튜브 검색 실패 ({kw}): {e}')
+            import traceback; traceback.print_exc()
 
     print(f'  → 후보 {len(candidate_ids)}개, 조회수 확인 중...')
 
