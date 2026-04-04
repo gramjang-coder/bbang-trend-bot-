@@ -162,41 +162,43 @@ def collect_competitors():
     except Exception as e:
         print(f'  ⚠️ 최근 수집 실패: {e}')
 
-    # 1년전~1년1개월전 전체
-    y_s = (today - timedelta(days=396)).isoformat()
-    y_e = (today - timedelta(days=335)).isoformat()
-    print(f'  📅 1년전~1년1개월전 전체 ({y_s} ~ {y_e})...')
-    try:
-        posts = fetch_posts_apify('1년전~1년1개월전 전체', newer_than=y_s, older_than=y_e, limit=50)
-        results.extend(posts)
-        print(f'     → {len(posts)}개')
-    except Exception as e:
-        print(f'  ⚠️ 실패: {e}')
+    # 역사적 기간 정의 (겹치지 않게)
+    historical = [
+        ('1년전~1년1개월전 전체', today - timedelta(days=396), today - timedelta(days=335)),
+        ('1년 전',               today - timedelta(days=372), today - timedelta(days=358)),
+        ('1년 1개월 전',         today - timedelta(days=403), today - timedelta(days=389)),
+    ]
 
-    # 1년 전
-    y1_s = (today - timedelta(days=372)).isoformat()
-    y1_e = (today - timedelta(days=358)).isoformat()
-    print(f'  📅 1년 전 ({y1_s} ~ {y1_e})...')
-    try:
-        posts = fetch_posts_apify('1년 전', newer_than=y1_s, older_than=y1_e, limit=30)
-        results.extend(posts)
-        print(f'     → {len(posts)}개')
-    except Exception as e:
-        print(f'  ⚠️ 실패: {e}')
-
-    # 1년 1개월 전
-    y2_s = (today - timedelta(days=403)).isoformat()
-    y2_e = (today - timedelta(days=389)).isoformat()
-    print(f'  📅 1년 1개월 전 ({y2_s} ~ {y2_e})...')
-    try:
-        posts = fetch_posts_apify('1년 1개월 전', newer_than=y2_s, older_than=y2_e, limit=30)
-        results.extend(posts)
-        print(f'     → {len(posts)}개')
-    except Exception as e:
-        print(f'  ⚠️ 실패: {e}')
+    seen_historical = set()
+    for label, start_dt, end_dt in historical:
+        s = start_dt.isoformat()
+        e = end_dt.isoformat()
+        print(f'  📅 {label} ({s} ~ {e})...')
+        try:
+            posts = fetch_posts_apify(label, newer_than=s, older_than=e, limit=50)
+            valid = []
+            for p in posts:
+                url = p.get('url', '')
+                pub = p.get('published_at', '')
+                if url in seen_historical:
+                    continue
+                if pub:
+                    try:
+                        pub_dt = date.fromisoformat(pub[:10])
+                        if not (start_dt <= pub_dt <= end_dt):
+                            continue
+                    except:
+                        pass
+                seen_historical.add(url)
+                valid.append(p)
+            results.extend(valid)
+            print(f'     → {len(valid)}개 (날짜 검증 후)')
+        except Exception as e:
+            print(f'  ⚠️ {label} 실패: {e}')
 
     print(f'  → 합계 {len(results)}개 수집')
     return results
+
 
 
 # 제거할 무의미한 태그 패턴
@@ -208,6 +210,14 @@ FILTER_TAGS = {
     # 일반 노출용
     '맞팔', '좋아요', '팔로우', '선팔', 'follow', 'like', 'likes', 'instagood',
     'instadaily', 'photooftheday', 'love', 'beautiful',
+    # F&B와 무관한 태그
+    '러닝', '운동', '헬스', '요가', '필라테스', '여행', '일상', '패션', '뷰티', '메이크업',
+    '미술', '예술', '아트', 'artwork', 'aesthetic', 'art', 'beauty', 'fashion',
+    '음악', '영화', '드라마', '배우', '아이돌', '연예인',
+    '롯데마트', '롯데슈퍼', '이마트', '홈플러스',
+    'veuveClicquot', 'simonportejacquemus',
+    # 사람 이름 패턴 (짧은 영문 이름)
+    'jw', 'sson',
 }
 
 def _is_meaningful_tag(tag):
@@ -258,7 +268,9 @@ def extract_hashtags_from_competitors(competitor_data):
                 if key not in post_examples:
                     post_examples[key] = post_url
 
-        for rank, (tag, count) in enumerate(counter.most_common(30), 1):
+        # 최소 3회 이상 + 상위 30개
+        qualified = [(tag, count) for tag, count in counter.most_common() if count >= 50][:30]
+        for rank, (tag, count) in enumerate(qualified, 1):
             all_results.append({
                 'rank': rank,
                 'period': period,
@@ -331,48 +343,71 @@ def collect_naver_blog():
     return results
 
 
+# 유튜브 수집 기준
+YOUTUBE_KEYWORDS   = ['빵', '떡', '여행']
+YOUTUBE_MIN_VIEWS  = 300000   # 30만 이상
+YOUTUBE_DAYS       = 3        # 최근 3일 이내
+
+
 def collect_youtube():
-    print('📺 유튜브 수집 중...')
-    results = []
-    for kw in BUZZ_KEYWORDS[:5]:
+    print('📺 유튜브 급상승 수집 중...')
+    published_after = (date.today() - timedelta(days=YOUTUBE_DAYS)).isoformat() + 'T00:00:00Z'
+    candidate_ids = []
+    id_to_meta = {}
+
+    # 1단계: 키워드별 최근 영상 검색 (최대 50개씩)
+    for kw in YOUTUBE_KEYWORDS:
         try:
-            # 1단계: 검색으로 영상 ID 수집
             resp = requests.get(
                 'https://www.googleapis.com/youtube/v3/search',
-                params={'key': YOUTUBE_KEY, 'q': kw, 'type': 'video', 'order': 'viewCount',
-                        'regionCode': 'KR', 'relevanceLanguage': 'ko', 'maxResults': 5, 'part': 'snippet'},
+                params={
+                    'key': YOUTUBE_KEY, 'q': kw, 'type': 'video',
+                    'order': 'viewCount', 'regionCode': 'KR',
+                    'relevanceLanguage': 'ko', 'maxResults': 50,
+                    'part': 'snippet', 'publishedAfter': published_after,
+                },
                 timeout=30,
             )
-            items = resp.json().get('items', [])
-            if not items:
-                continue
+            for item in resp.json().get('items', []):
+                vid_id = item['id']['videoId']
+                if vid_id not in id_to_meta:
+                    candidate_ids.append(vid_id)
+                    id_to_meta[vid_id] = {
+                        'title':     item['snippet']['title'],
+                        'channel':   item['snippet']['channelTitle'],
+                        'keyword':   kw,
+                        'url':       f'https://www.youtube.com/watch?v={vid_id}',
+                        'platform':  'YouTube',
+                        'thumbnail': item['snippet'].get('thumbnails', {}).get('high', {}).get('url', ''),
+                    }
+        except Exception as e:
+            print(f'  ⚠️ 검색 실패 ({kw}): {e}')
 
-            # 2단계: videos API로 조회수 가져오기
-            vid_ids = [i['id']['videoId'] for i in items]
+    print(f'  → 후보 {len(candidate_ids)}개, 조회수 확인 중...')
+
+    # 2단계: videos API로 조회수 일괄 조회 (50개씩 배치)
+    results = []
+    for i in range(0, len(candidate_ids), 50):
+        batch = candidate_ids[i:i+50]
+        try:
             stats_resp = requests.get(
                 'https://www.googleapis.com/youtube/v3/videos',
-                params={'key': YOUTUBE_KEY, 'id': ','.join(vid_ids), 'part': 'statistics'},
+                params={'key': YOUTUBE_KEY, 'id': ','.join(batch), 'part': 'statistics'},
                 timeout=30,
             )
-            stats_map = {
-                s['id']: int(s['statistics'].get('viewCount', 0))
-                for s in stats_resp.json().get('items', [])
-            }
-
-            for item in items:
-                vid_id = item['id']['videoId']
-                results.append({
-                    'title':     item['snippet']['title'],
-                    'channel':   item['snippet']['channelTitle'],
-                    'keyword':   kw,
-                    'views':     stats_map.get(vid_id, 0),
-                    'url':       f'https://www.youtube.com/watch?v={vid_id}',
-                    'platform':  'YouTube',
-                    'thumbnail': item['snippet'].get('thumbnails', {}).get('high', {}).get('url', ''),
-                })
+            for s in stats_resp.json().get('items', []):
+                vid_id = s['id']
+                views = int(s['statistics'].get('viewCount', 0))
+                if views >= YOUTUBE_MIN_VIEWS:
+                    meta = id_to_meta[vid_id].copy()
+                    meta['views'] = views
+                    results.append(meta)
         except Exception as e:
-            print(f'  ⚠️ 유튜브 {kw} 실패: {e}')
-    print(f'  → {len(results)}개 수집')
+            print(f'  ⚠️ 조회수 조회 실패: {e}')
+
+    # 조회수 내림차순 정렬
+    results.sort(key=lambda x: x['views'], reverse=True)
+    print(f'  → 조회수 {YOUTUBE_MIN_VIEWS:,}회 이상 {len(results)}개 수집')
     return results
 
 
@@ -405,7 +440,7 @@ def set_row_heights(workbook, ws, start_row, end_row, height=150):
         print(f'  ⚠️ 행 높이 설정 실패: {e}')
 
 
-def save_to_sheets(workbook, competitor_data, hashtag_data, buzz_data, viral_data):
+def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
 
     # ① 경쟁 계정 성과
     ws1 = get_or_create_sheet(workbook, '인스타그램 레퍼런스 계정 성과', [
@@ -426,21 +461,14 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, buzz_data, viral_dat
         ])
     if rows1:
         ws1.append_rows(rows1, value_input_option='USER_ENTERED')
-    print(f'  ✅ 경쟁계정성과 {len(rows1)}행 저장')
+    print(f'  ✅ 인스타그램 레퍼런스 계정 성과 {len(rows1)}행 저장')
 
     # ② 트렌딩 해시태그
     ws2 = get_or_create_sheet(workbook, '언급 많은 해시태그', ['순위', '수집날짜', '기간', '해시태그', '언급횟수', '대표게시물링크'])
     rows2 = [[i['rank'], TODAY, i.get('period',''), i['hashtag'], i['count'], i['example_url']] for i in hashtag_data]
     if rows2:
         ws2.append_rows(rows2, value_input_option='USER_ENTERED')
-    print(f'  ✅ 트렌딩해시태그 {len(rows2)}행 저장')
-
-    # ③ F&B 키워드 버즈량
-    ws3 = get_or_create_sheet(workbook, '네이버 블로그/유튜브 키워드 트렌드', ['순위', '수집날짜', '키워드', '언급량', '플랫폼', '링크'])
-    rows3 = [[i.get('rank',''), TODAY, i['keyword'], i['mention_count'], i['platform'], i['url']] for i in buzz_data]
-    if rows3:
-        ws3.append_rows(rows3, value_input_option='USER_ENTERED')
-    print(f'  ✅ FB키워드버즈량 {len(rows3)}행 저장')
+    print(f'  ✅ 언급 많은 해시태그 {len(rows2)}행 저장')
 
     # ④ 급상승 콘텐츠
     ws4 = get_or_create_sheet(workbook, '유튜브 급상승 콘텐츠', [
@@ -466,7 +494,7 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, buzz_data, viral_dat
                 'fields': 'pixelSize',
             }
         }]})
-    print(f'  ✅ 급상승콘텐츠 {len(rows4)}행 저장')
+    print(f'  ✅ 유튜브 급상승 콘텐츠 {len(rows4)}행 저장')
 
 
 if __name__ == '__main__':
@@ -474,14 +502,13 @@ if __name__ == '__main__':
 
     competitor_data = collect_competitors()
     hashtag_data    = extract_hashtags_from_competitors(competitor_data)
-    buzz_data       = rank_items('F&B 키워드 버즈량', collect_youtube_buzz() + collect_naver_blog())
     viral_data      = rank_items('급상승 콘텐츠', collect_youtube())
     competitor_data = rank_items('경쟁 계정 성과', competitor_data)
 
-    print(f'\n📊 수집 완료 — 경쟁계정 {len(competitor_data)} | 해시태그 {len(hashtag_data)} | 버즈량 {len(buzz_data)} | 급상승 {len(viral_data)}\n')
+    print(f'\n📊 수집 완료 — 경쟁계정 {len(competitor_data)} | 해시태그 {len(hashtag_data)} | 급상승 {len(viral_data)}\n')
 
     print('💾 Google Sheets 저장 중...')
     workbook = get_sheet()
-    save_to_sheets(workbook, competitor_data, hashtag_data, buzz_data, viral_data)
+    save_to_sheets(workbook, competitor_data, hashtag_data, viral_data)
 
     print('\n✅ 완료!')
