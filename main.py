@@ -131,29 +131,25 @@ def _within_days(pub_str, min_days, max_days, today):
         return False
 
 
-def fetch_posts_apify(label, newer_than=None, older_than=None, limit=30):
+def fetch_posts_apify(label, newer_than=None, older_than=None, limit=5):
+    """비용 최소화: 3개씩 묶어서 요청 (18개 → 6번 실행)"""
+    BATCH_SIZE = 3
+    PER_ACCOUNT = min(limit, 5)
     all_data = []
-    for acc in COMPETITOR_ACCOUNTS:
-        # directUrls 먼저 시도, 실패하면 usernames로 재시도
+
+    for i in range(0, len(COMPETITOR_ACCOUNTS), BATCH_SIZE):
+        batch = COMPETITOR_ACCOUNTS[i:i+BATCH_SIZE]
         params = {
-            'directUrls': [f'https://www.instagram.com/{acc}/'],
+            'directUrls': [f'https://www.instagram.com/{acc}/' for acc in batch],
             'resultsType': 'posts',
-            'resultsLimit': min(limit, 10),
+            'resultsLimit': PER_ACCOUNT,
         }
         try:
             data = run_apify('apify/instagram-scraper', params)
             all_data.extend(data)
-        except Exception:
-            try:
-                params2 = {
-                    'usernames': [acc],
-                    'resultsType': 'posts',
-                    'resultsLimit': min(limit, 10),
-                }
-                data = run_apify('apify/instagram-scraper', params2)
-                all_data.extend(data)
-            except Exception as e2:
-                print(f'  ⚠️ {acc} 실패: {e2}')
+            print(f'  배치 {i//BATCH_SIZE+1}: {len(data)}개')
+        except Exception as e:
+            print(f'  ⚠️ 배치 {i//BATCH_SIZE+1} 실패: {e}')
 
     seen = set()
     results = []
@@ -164,8 +160,6 @@ def fetch_posts_apify(label, newer_than=None, older_than=None, limit=30):
         seen.add(url)
         results.append(parse_post(item, label))
     return results
-
-
 def collect_competitors():
     print('👥 레퍼런스 계정 수집 중...')
     today = date.today()
