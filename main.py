@@ -132,26 +132,18 @@ def _within_days(pub_str, min_days, max_days, today):
 
 
 def fetch_posts_apify(label, newer_than=None, older_than=None, limit=30):
-    # 계정 10개씩 배치 처리 (400 에러 방지)
-    BATCH_SIZE = 10
     all_data = []
-    accounts = COMPETITOR_ACCOUNTS
-    for i in range(0, len(accounts), BATCH_SIZE):
-        batch = accounts[i:i+BATCH_SIZE]
+    for acc in COMPETITOR_ACCOUNTS:
         params = {
-            'directUrls': [f'https://www.instagram.com/{acc}/' for acc in batch],
+            'directUrls': [f'https://www.instagram.com/{acc}/'],
             'resultsType': 'posts',
             'resultsLimit': limit,
         }
-        if newer_than:
-            params['onlyPostsNewerThan'] = newer_than
-        if older_than:
-            params['onlyPostsOlderThan'] = older_than
         try:
             data = run_apify('apify/instagram-scraper', params)
             all_data.extend(data)
         except Exception as e:
-            print(f'  ⚠️ 배치 {i//BATCH_SIZE+1} 실패: {e}')
+            print(f'  ⚠️ {acc} 실패: {e}')
 
     seen = set()
     results = []
@@ -352,7 +344,7 @@ def collect_youtube():
             for s in stats_resp.json().get('items', []):
                 vid_id = s['id']
                 views = int(s['statistics'].get('viewCount', 0))
-                if views < 100000:
+                if views < 10000:  # 최소 1만만 넘으면 수집
                     continue
 
                 # 영상 길이 파싱 (ISO 8601: PT1M30S 등)
