@@ -134,16 +134,26 @@ def _within_days(pub_str, min_days, max_days, today):
 def fetch_posts_apify(label, newer_than=None, older_than=None, limit=30):
     all_data = []
     for acc in COMPETITOR_ACCOUNTS:
+        # directUrls 먼저 시도, 실패하면 usernames로 재시도
         params = {
             'directUrls': [f'https://www.instagram.com/{acc}/'],
             'resultsType': 'posts',
-            'resultsLimit': limit,
+            'resultsLimit': min(limit, 10),
         }
         try:
             data = run_apify('apify/instagram-scraper', params)
             all_data.extend(data)
-        except Exception as e:
-            print(f'  ⚠️ {acc} 실패: {e}')
+        except Exception:
+            try:
+                params2 = {
+                    'usernames': [acc],
+                    'resultsType': 'posts',
+                    'resultsLimit': min(limit, 10),
+                }
+                data = run_apify('apify/instagram-scraper', params2)
+                all_data.extend(data)
+            except Exception as e2:
+                print(f'  ⚠️ {acc} 실패: {e2}')
 
     seen = set()
     results = []
@@ -177,6 +187,26 @@ def collect_competitors():
 
     print(f'  → 합계 {len(results)}개 수집')
     return results
+
+FILTER_TAGS = {
+    '광고', '협찬', '제작지원', 'ad', 'sponsored', 'pr', 'collaboration', 'partnership',
+    'eyesmag', 'knewnew', 'omuck', 'dailyfood', 'daily_fnb', 'idea82people', 'idea82',
+    'cbi', 'dailyfashion', 'yeomi', 'daytripkorea', 'luxmag', 'seoulhotple',
+    'hweekmag', 'artart', 'yomagazine', 'seoul_thehotple', 'tripgoing', 'all_about_20s',
+    '맞팔', '좋아요', '팔로우', '선팔', 'follow', 'like', 'likes', 'instagood',
+    'instadaily', 'photooftheday', 'love', 'beautiful',
+}
+
+def _is_meaningful_tag(tag):
+    tag_lower = tag.lower().lstrip('#')
+    if tag_lower in FILTER_TAGS:
+        return False
+    if tag_lower.isdigit():
+        return False
+    if len(tag_lower) <= 1:
+        return False
+    return True
+
 
 def extract_hashtags_from_competitors(competitor_data):
     print('📌 경쟁사 해시태그 집계 중...')
