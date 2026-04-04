@@ -23,6 +23,18 @@ COMPETITOR_ACCOUNTS = [
     'dailyfood_news',
     'daily_fnb',
     'idea82people',
+    'cbi.busan',
+    'dailyfashion_news',
+    'yeomi.travel',
+    'daytripkorea',
+    'luxmag.kr',
+    'seoulhotple',
+    'hweekmag',
+    'artart.today',
+    'yomagazine_',
+    'seoul_thehotple',
+    '_tripgoing',
+    'all.about.20s',
 ]
 
 BUZZ_KEYWORDS = ['빵', '베이커리', '소금빵', '크루아상', '디저트카페', '빵집투어', '브런치']
@@ -142,104 +154,33 @@ def fetch_posts_apify(label, newer_than=None, older_than=None, limit=30):
 
 
 def collect_competitors():
-    print('👥 경쟁 계정 수집 중...')
+    print('👥 레퍼런스 계정 수집 중...')
     today = date.today()
     results = []
 
-    # 현재 + 1달 전: 최신 50개 수집 후 날짜로 분류
-    print(f'  📥 최근 게시물 수집 중...')
+    print(f'  📥 최근 3일 게시물 수집 중...')
     try:
-        recent = fetch_posts_apify('', limit=50)
+        recent = fetch_posts_apify('현재', limit=50)
         for p in recent:
-            if _within_days(p.get('published_at',''), 0, 7, today):
-                p['period'] = '현재'
+            if not _within_days(p.get('published_at',''), 0, 3, today):
+                continue
+            # 조회수 10만 OR 좋아요 5천 OR 댓글 100 중 하나라도 충족
+            if (p.get('views', 0) >= 100000 or
+                    p.get('likes', 0) >= 1000 or
+                    p.get('comments', 0) >= 50):
                 results.append(p)
-            elif _within_days(p.get('published_at',''), 8, 30, today):
-                p['period'] = '현재부터 1달 전'
-                results.append(p)
-            # 기간 범위 밖 게시물은 저장하지 않음
-        print(f'     → 현재/1달전 {len(results)}개')
+        print(f'     → {len(results)}개 (조건 충족)')
     except Exception as e:
-        print(f'  ⚠️ 최근 수집 실패: {e}')
-
-    # 역사적 기간 정의 (겹치지 않게)
-    historical = [
-        ('1년전~1년1개월전 전체', today - timedelta(days=396), today - timedelta(days=335)),
-        ('1년 전',               today - timedelta(days=372), today - timedelta(days=358)),
-        ('1년 1개월 전',         today - timedelta(days=403), today - timedelta(days=389)),
-    ]
-
-    seen_historical = set()
-    for label, start_dt, end_dt in historical:
-        s = start_dt.isoformat()
-        e = end_dt.isoformat()
-        print(f'  📅 {label} ({s} ~ {e})...')
-        try:
-            posts = fetch_posts_apify(label, newer_than=s, older_than=e, limit=50)
-            valid = []
-            for p in posts:
-                url = p.get('url', '')
-                pub = p.get('published_at', '')
-                if url in seen_historical:
-                    continue
-                if pub:
-                    try:
-                        pub_dt = date.fromisoformat(pub[:10])
-                        if not (start_dt <= pub_dt <= end_dt):
-                            continue
-                    except:
-                        pass
-                seen_historical.add(url)
-                valid.append(p)
-            results.extend(valid)
-            print(f'     → {len(valid)}개 (날짜 검증 후)')
-        except Exception as e:
-            print(f'  ⚠️ {label} 실패: {e}')
+        print(f'  ⚠️ 수집 실패: {e}')
 
     print(f'  → 합계 {len(results)}개 수집')
     return results
-
-
-
-# 제거할 무의미한 태그 패턴
-FILTER_TAGS = {
-    # 광고/협찬
-    '광고', '협찬', '제작지원', 'ad', 'sponsored', 'pr', 'collaboration', 'partnership',
-    # 계정명/브랜드 자기언급
-    'eyesmag', 'knewnew', 'omuck', 'dailyfood', 'daily_fnb', 'idea82people', 'idea82',
-    # 일반 노출용
-    '맞팔', '좋아요', '팔로우', '선팔', 'follow', 'like', 'likes', 'instagood',
-    'instadaily', 'photooftheday', 'love', 'beautiful',
-    # F&B와 무관한 태그
-    '러닝', '운동', '헬스', '요가', '필라테스', '여행', '일상', '패션', '뷰티', '메이크업',
-    '미술', '예술', '아트', 'artwork', 'aesthetic', 'art', 'beauty', 'fashion',
-    '음악', '영화', '드라마', '배우', '아이돌', '연예인',
-    '롯데마트', '롯데슈퍼', '이마트', '홈플러스',
-    'veuveClicquot', 'simonportejacquemus',
-    # 사람 이름 패턴 (짧은 영문 이름)
-    'jw', 'sson',
-}
-
-def _is_meaningful_tag(tag):
-    """의미 없는 태그 필터링"""
-    tag_lower = tag.lower().lstrip('#')
-    # 필터 목록에 있으면 제거
-    if tag_lower in FILTER_TAGS:
-        return False
-    # 숫자만 있으면 제거
-    if tag_lower.isdigit():
-        return False
-    # 너무 짧으면 제거 (1자)
-    if len(tag_lower) <= 1:
-        return False
-    return True
-
 
 def extract_hashtags_from_competitors(competitor_data):
     print('📌 경쟁사 해시태그 집계 중...')
 
     # 기간별로 분리
-    periods = ['현재', '현재부터 1달 전', '1년 전', '1년 1개월 전', '1년전~1년1개월전 전체']
+    periods = ['현재']
     period_data = {p: [] for p in periods}
     for item in competitor_data:
         p = item.get('period', '')
@@ -269,7 +210,7 @@ def extract_hashtags_from_competitors(competitor_data):
                     post_examples[key] = post_url
 
         # 최소 3회 이상 + 상위 30개
-        qualified = [(tag, count) for tag, count in counter.most_common() if count >= 50][:30]
+        qualified = [(tag, count) for tag, count in counter.most_common() if count >= 5][:30]
         for rank, (tag, count) in enumerate(qualified, 1):
             all_results.append({
                 'rank': rank,
@@ -344,9 +285,10 @@ def collect_naver_blog():
 
 
 # 유튜브 수집 기준
-YOUTUBE_KEYWORDS   = ['빵', '떡', '여행']
+YOUTUBE_KEYWORDS   = ['빵', '떡', '여행', '베이커리', '카페', '맛집', '디저트', '소금빵', '크루아상']
 YOUTUBE_MIN_VIEWS  = 300000   # 30만 이상
 YOUTUBE_DAYS       = 3        # 최근 3일 이내
+YOUTUBE_TARGET     = 30       # 목표 수집 개수
 
 
 def collect_youtube():
@@ -407,8 +349,21 @@ def collect_youtube():
 
     # 조회수 내림차순 정렬
     results.sort(key=lambda x: x['views'], reverse=True)
-    print(f'  → 조회수 {YOUTUBE_MIN_VIEWS:,}회 이상 {len(results)}개 수집')
-    return results
+
+    # 채널당 1개만 (조회수 높은 것 우선) → 상위 30개
+    seen_channels = set()
+    deduped = []
+    for r in results:
+        ch = r.get('channel', '')
+        if ch in seen_channels:
+            continue
+        seen_channels.add(ch)
+        deduped.append(r)
+        if len(deduped) >= YOUTUBE_TARGET:
+            break
+
+    print(f'  → 조회수 {YOUTUBE_MIN_VIEWS:,}회 이상 / 채널 중복 제거 후 {len(deduped)}개 수집')
+    return deduped
 
 
 def rank_items(category, items):
@@ -460,14 +415,26 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
             likes + comments, item.get('caption', ''), item.get('hashtags', ''), link_formula,
         ])
     if rows1:
+        start_row = len(ws1.get_all_values()) + 1
         ws1.append_rows(rows1, value_input_option='USER_ENTERED')
+        end_row = start_row + len(rows1) - 1
+        # 글자 크기 12, 숫자 포맷
+        ws1.format(f'A{start_row}:L{end_row}', {'textFormat': {'fontSize': 12}})
+        ws1.format(f'F{start_row}:H{end_row}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
+        ws1.format(f'I{start_row}:I{end_row}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
+    ws1.format('1:1', {'textFormat': {'fontSize': 12, 'bold': True}})
     print(f'  ✅ 인스타그램 레퍼런스 계정 성과 {len(rows1)}행 저장')
 
     # ② 트렌딩 해시태그
     ws2 = get_or_create_sheet(workbook, '언급 많은 해시태그', ['순위', '수집날짜', '기간', '해시태그', '언급횟수', '대표게시물링크'])
     rows2 = [[i['rank'], TODAY, i.get('period',''), i['hashtag'], i['count'], i['example_url']] for i in hashtag_data]
     if rows2:
+        start_row2 = len(ws2.get_all_values()) + 1
         ws2.append_rows(rows2, value_input_option='USER_ENTERED')
+        end_row2 = start_row2 + len(rows2) - 1
+        ws2.format(f'A{start_row2}:F{end_row2}', {'textFormat': {'fontSize': 12}})
+        ws2.format(f'E{start_row2}:E{end_row2}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
+    ws2.format('1:1', {'textFormat': {'fontSize': 12, 'bold': True}})
     print(f'  ✅ 언급 많은 해시태그 {len(rows2)}행 저장')
 
     # ④ 급상승 콘텐츠
@@ -486,7 +453,10 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
     if rows4:
         start = len(ws4.get_all_values()) + 1
         ws4.append_rows(rows4, value_input_option='USER_ENTERED')
-        set_row_heights(workbook, ws4, start, start + len(rows4) - 1, 150)
+        end_row4 = start + len(rows4) - 1
+        set_row_heights(workbook, ws4, start, end_row4, 150)
+        ws4.format(f'A{start}:I{end_row4}', {'textFormat': {'fontSize': 12}})
+        ws4.format(f'F{start}:F{end_row4}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
         ws4.spreadsheet.batch_update({'requests': [{
             'updateDimensionProperties': {
                 'range': {'sheetId': ws4.id, 'dimension': 'COLUMNS', 'startIndex': 8, 'endIndex': 9},
@@ -494,6 +464,7 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
                 'fields': 'pixelSize',
             }
         }]})
+    ws4.format('1:1', {'textFormat': {'fontSize': 12, 'bold': True}})
     print(f'  ✅ 유튜브 급상승 콘텐츠 {len(rows4)}행 저장')
 
 
@@ -503,7 +474,10 @@ if __name__ == '__main__':
     competitor_data = collect_competitors()
     hashtag_data    = extract_hashtags_from_competitors(competitor_data)
     viral_data      = rank_items('급상승 콘텐츠', collect_youtube())
-    competitor_data = rank_items('경쟁 계정 성과', competitor_data)
+    # 발행일자 최신순 정렬
+    competitor_data.sort(key=lambda x: x.get('published_at', ''), reverse=True)
+    for i, item in enumerate(competitor_data, 1):
+        item['rank'] = i
 
     print(f'\n📊 수집 완료 — 경쟁계정 {len(competitor_data)} | 해시태그 {len(hashtag_data)} | 급상승 {len(viral_data)}\n')
 
