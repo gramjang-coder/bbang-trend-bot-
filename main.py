@@ -208,52 +208,54 @@ def _is_meaningful_tag(tag):
     return True
 
 
-def extract_hashtags_from_competitors(competitor_data):
-    print('📌 경쟁사 해시태그 집계 중...')
+def extract_keywords_from_captions(competitor_data):
+    """캡션에서 kiwipiepy로 명사 추출 후 5회 이상 언급 키워드 집계"""
+    print('📌 캡션 키워드 추출 중...')
+    try:
+        from kiwipiepy import Kiwi
+        kiwi = Kiwi()
+        use_kiwi = True
+    except ImportError:
+        use_kiwi = False
+        print('  ⚠️ kiwipiepy 미설치, 단순 분리 방식 사용')
 
-    # 기간별로 분리
-    periods = ['현재']
-    period_data = {p: [] for p in periods}
+    STOP_WORDS = {
+        '것', '수', '때', '곳', '등', '제', '저', '그', '이', '저희',
+        '정말', '너무', '진짜', '아주', '매우', '더', '또', '도', '만',
+        '광고', '협찬', '제작지원', '맞팔', '좋아요', '팔로우',
+    }
+
+    counter = Counter()
+    post_examples = {}
+
     for item in competitor_data:
-        p = item.get('period', '')
-        if p in period_data:
-            period_data[p].append(item)
-
-    all_results = []
-
-    for period, items in period_data.items():
-        if not items:
+        caption = item.get('caption', '') or ''
+        post_url = item.get('url', '')
+        if not caption:
             continue
-        counter = Counter()
-        post_examples = {}
-        for item in items:
-            tags_raw = item.get('hashtags', '') or ''
-            post_url = item.get('url', '')
-            tags = [t.strip() for t in tags_raw.split(',') if t.strip()] if isinstance(tags_raw, str) else tags_raw
-            for tag in tags:
-                tag = tag.strip().lstrip('#')
-                if not tag:
-                    continue
-                key = f'#{tag}'
-                if not _is_meaningful_tag(key):
-                    continue
-                counter[key] += 1
-                if key not in post_examples:
-                    post_examples[key] = post_url
 
-        # 최소 3회 이상 + 상위 30개
-        qualified = [(tag, count) for tag, count in counter.most_common() if count >= 2][:30]
-        for rank, (tag, count) in enumerate(qualified, 1):
-            all_results.append({
-                'rank': rank,
-                'period': period,
-                'hashtag': tag,
-                'count': count,
-                'example_url': post_examples.get(tag, ''),
-            })
+        if use_kiwi:
+            try:
+                tokens = kiwi.tokenize(caption)
+                words = [t.form for t in tokens if t.tag.startswith('N') and len(t.form) >= 2]
+            except:
+                words = [w for w in caption.split() if len(w) >= 2 and re.search(r'[가-힣]', w)]
+        else:
+            words = [w for w in re.split(r'[\s\W]+', caption) if len(w) >= 2 and re.search(r'[가-힣]', w)]
 
-    print(f'  → {len(all_results)}개 집계 완료')
-    return all_results
+        for word in words:
+            if word in STOP_WORDS:
+                continue
+            counter[word] += 1
+            if word not in post_examples:
+                post_examples[word] = post_url
+
+    qualified = [(w, c) for w, c in counter.most_common() if c >= 5][:30]
+    results = []
+    for rank, (w, count) in enumerate(qualified, 1):
+        results.append({'rank': rank, 'keyword': w, 'count': count, 'example_url': post_examples.get(w, '')})
+    print(f'  → {len(results)}개 키워드 추출 완료')
+    return results
 
 
 def collect_youtube_buzz():
@@ -371,7 +373,12 @@ def collect_youtube():
                 params={'key': YOUTUBE_KEY, 'id': ','.join(batch), 'part': 'statistics,contentDetails'},
                 timeout=30,
             )
-            for s in stats_resp.json().get('items', []):
+            stats_data = stats_resp.json()
+            if 'error' in stats_data:
+                print(f'  ⚠️ videos API 에러: {stats_data["error"]}')
+                continue
+            print(f'  → videos API 응답: {len(stats_data.get("items", []))}개')
+            for s in stats_data.get('items', []):
                 vid_id = s['id']
                 views = int(s['statistics'].get('viewCount', 0))
                 if views < 10000:  # 최소 1만만 넘으면 수집
@@ -379,11 +386,10 @@ def collect_youtube():
 
                 # 영상 길이 파싱 (ISO 8601: PT1M30S 등)
                 duration_str = s.get('contentDetails', {}).get('duration', 'PT0S')
-                import re as _re
-                hours   = int((_re.search(r'(\d+)H', duration_str) or type('', (), {'group': lambda *a: 0})()).group(1) or 0)
-                minutes = int((_re.search(r'(\d+)M', duration_str) or type('', (), {'group': lambda *a: 0})()).group(1) or 0)
-                seconds = int((_re.search(r'(\d+)S', duration_str) or type('', (), {'group': lambda *a: 0})()).group(1) or 0)
-                total_sec = hours * 3600 + minutes * 60 + seconds
+                h = int(re.search(r'(\d+)H', duration_str).group(1)) if re.search(r'(\d+)H', duration_str) else 0
+                m = int(re.search(r'(\d+)M', duration_str).group(1)) if re.search(r'(\d+)M', duration_str) else 0
+                sec = int(re.search(r'(\d+)S', duration_str).group(1)) if re.search(r'(\d+)S', duration_str) else 0
+                total_sec = h * 3600 + m * 60 + sec
                 is_short = total_sec <= 60
 
                 meta = id_to_meta[vid_id].copy()
@@ -500,15 +506,15 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
     print(f'  ✅ 인스타그램 레퍼런스 계정 성과 {len(rows1)}행 저장')
 
     # ② 트렌딩 해시태그
-    ws2 = get_or_create_sheet(workbook, '언급 많은 해시태그', ['순위', '수집날짜', '기간', '해시태그', '언급횟수', '대표게시물링크'])
-    rows2 = [[i['rank'], TODAY, i.get('period',''), i['hashtag'], i['count'], i['example_url']] for i in hashtag_data]
+    ws2 = get_or_create_sheet(workbook, '언급 많은 키워드', ['순위', '수집날짜', '키워드', '언급횟수', '대표게시물링크'])
+    rows2 = [[i['rank'], TODAY, i['keyword'], i['count'], i['example_url']] for i in hashtag_data]
     if rows2:
         start_row2 = len(ws2.get_all_values()) + 1
         ws2.append_rows(rows2, value_input_option='USER_ENTERED')
         end_row2 = start_row2 + len(rows2) - 1
         ws2.format(f'A{start_row2}:F{end_row2}', {'textFormat': {'fontSize': 12}})
         ws2.format(f'E{start_row2}:E{end_row2}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
-    print(f'  ✅ 언급 많은 해시태그 {len(rows2)}행 저장')
+    print(f'  ✅ 언급 많은 키워드 {len(rows2)}행 저장')
 
     # ④ 급상승 콘텐츠
     ws4 = get_or_create_sheet(workbook, '유튜브 급상승 콘텐츠', [
@@ -545,7 +551,7 @@ if __name__ == '__main__':
     print(f'🚀 트렌드 수집 시작: {TODAY}\n')
 
     competitor_data = collect_competitors()
-    hashtag_data    = extract_hashtags_from_competitors(competitor_data)
+    hashtag_data    = extract_keywords_from_captions(competitor_data)
     viral_data      = rank_items('급상승 콘텐츠', collect_youtube())
     # 발행일자 최신순 정렬
     competitor_data.sort(key=lambda x: x.get('published_at', ''), reverse=True)
