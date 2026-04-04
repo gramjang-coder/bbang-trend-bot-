@@ -62,8 +62,8 @@ def get_or_create_sheet(workbook, title, headers):
         ws = workbook.add_worksheet(title=title, rows=2000, cols=len(headers))
         ws.append_row(headers, value_input_option='USER_ENTERED')
         ws.format('1:1', {
-            'backgroundColor': {'red': 0.15, 'green': 0.15, 'blue': 0.15},
-            'textFormat': {'bold': True, 'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}},
+            'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 0.9},
+            'textFormat': {'bold': True, 'fontSize': 12, 'foregroundColor': {'red': 0, 'green': 0, 'blue': 0}},
         })
     return ws
 
@@ -160,7 +160,7 @@ def collect_competitors():
 
     print(f'  📥 최근 3일 게시물 수집 중...')
     try:
-        recent = fetch_posts_apify('현재', limit=50)
+        recent = fetch_posts_apify('현재', limit=200)
         for p in recent:
             if not _within_days(p.get('published_at',''), 0, 3, today):
                 continue
@@ -286,7 +286,7 @@ def collect_naver_blog():
 
 # 유튜브 수집 기준
 YOUTUBE_KEYWORDS   = ['빵', '떡', '여행', '베이커리', '카페', '맛집', '디저트', '소금빵', '크루아상']
-YOUTUBE_MIN_VIEWS  = 300000   # 30만 이상
+YOUTUBE_MIN_VIEWS  = 200000   # 20만 이상
 YOUTUBE_DAYS       = 3        # 최근 3일 이내
 YOUTUBE_TARGET     = 30       # 목표 수집 개수
 
@@ -315,12 +315,13 @@ def collect_youtube():
                 if vid_id not in id_to_meta:
                     candidate_ids.append(vid_id)
                     id_to_meta[vid_id] = {
-                        'title':     item['snippet']['title'],
-                        'channel':   item['snippet']['channelTitle'],
-                        'keyword':   kw,
-                        'url':       f'https://www.youtube.com/watch?v={vid_id}',
-                        'platform':  'YouTube',
-                        'thumbnail': item['snippet'].get('thumbnails', {}).get('high', {}).get('url', ''),
+                        'title':        item['snippet']['title'],
+                        'channel':      item['snippet']['channelTitle'],
+                        'keyword':      kw,
+                        'published_at': item['snippet'].get('publishedAt', '')[:10],
+                        'url':          f'https://www.youtube.com/watch?v={vid_id}',
+                        'platform':     'YouTube',
+                        'thumbnail':    item['snippet'].get('thumbnails', {}).get('high', {}).get('url', ''),
                     }
         except Exception as e:
             print(f'  ⚠️ 검색 실패 ({kw}): {e}')
@@ -422,7 +423,6 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
         ws1.format(f'A{start_row}:L{end_row}', {'textFormat': {'fontSize': 12}})
         ws1.format(f'F{start_row}:H{end_row}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
         ws1.format(f'I{start_row}:I{end_row}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
-    ws1.format('1:1', {'textFormat': {'fontSize': 12, 'bold': True}})
     print(f'  ✅ 인스타그램 레퍼런스 계정 성과 {len(rows1)}행 저장')
 
     # ② 트렌딩 해시태그
@@ -434,21 +434,20 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
         end_row2 = start_row2 + len(rows2) - 1
         ws2.format(f'A{start_row2}:F{end_row2}', {'textFormat': {'fontSize': 12}})
         ws2.format(f'E{start_row2}:E{end_row2}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
-    ws2.format('1:1', {'textFormat': {'fontSize': 12, 'bold': True}})
     print(f'  ✅ 언급 많은 해시태그 {len(rows2)}행 저장')
 
     # ④ 급상승 콘텐츠
     ws4 = get_or_create_sheet(workbook, '유튜브 급상승 콘텐츠', [
-        '순위', '수집날짜', '플랫폼', '채널명', '제목', '조회수', '키워드', '링크', '썸네일',
+        '순위', '수집날짜', '업로드일자', '플랫폼', '채널명', '제목', '조회수', '키워드', '링크', '썸네일',
     ])
     rows4 = []
     for item in viral_data:
         thumb = item.get('thumbnail', '')
         img_formula = f'=IMAGE("{thumb}",2)' if thumb else ''
         rows4.append([
-            item.get('rank', ''), TODAY, item.get('platform', ''), item.get('channel', ''),
-            item.get('title', ''), item.get('views', 0), item.get('keyword', ''),
-            item.get('url', ''), img_formula,
+            item.get('rank', ''), TODAY, item.get('published_at', ''), item.get('platform', ''),
+            item.get('channel', ''), item.get('title', ''), item.get('views', 0),
+            item.get('keyword', ''), item.get('url', ''), img_formula,
         ])
     if rows4:
         start = len(ws4.get_all_values()) + 1
@@ -456,7 +455,7 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
         end_row4 = start + len(rows4) - 1
         set_row_heights(workbook, ws4, start, end_row4, 150)
         ws4.format(f'A{start}:I{end_row4}', {'textFormat': {'fontSize': 12}})
-        ws4.format(f'F{start}:F{end_row4}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
+        ws4.format(f'G{start}:G{end_row4}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
         ws4.spreadsheet.batch_update({'requests': [{
             'updateDimensionProperties': {
                 'range': {'sheetId': ws4.id, 'dimension': 'COLUMNS', 'startIndex': 8, 'endIndex': 9},
@@ -464,7 +463,6 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
                 'fields': 'pixelSize',
             }
         }]})
-    ws4.format('1:1', {'textFormat': {'fontSize': 12, 'bold': True}})
     print(f'  ✅ 유튜브 급상승 콘텐츠 {len(rows4)}행 저장')
 
 
