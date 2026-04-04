@@ -162,9 +162,8 @@ def collect_competitors():
     try:
         recent = fetch_posts_apify('현재', limit=200)
         for p in recent:
-            if not _within_days(p.get('published_at',''), 0, 3, today):
-                continue
-            # 조회수 10만 OR 좋아요 5천 OR 댓글 100 중 하나라도 충족
+            # Apify는 최신순으로 반환 → 날짜 필터 불필요
+            # 인게이지먼트 조건만 체크
             if (p.get('views', 0) >= 100000 or
                     p.get('likes', 0) >= 1000 or
                     p.get('comments', 0) >= 50):
@@ -210,7 +209,7 @@ def extract_hashtags_from_competitors(competitor_data):
                     post_examples[key] = post_url
 
         # 최소 3회 이상 + 상위 30개
-        qualified = [(tag, count) for tag, count in counter.most_common() if count >= 5][:30]
+        qualified = [(tag, count) for tag, count in counter.most_common() if count >= 2][:30]
         for rank, (tag, count) in enumerate(qualified, 1):
             all_results.append({
                 'rank': rank,
@@ -286,7 +285,7 @@ def collect_naver_blog():
 
 # 유튜브 수집 기준
 YOUTUBE_KEYWORDS   = ['빵', '떡', '여행', '베이커리', '카페', '맛집', '디저트', '소금빵', '크루아상']
-YOUTUBE_MIN_VIEWS  = 200000   # 20만 이상
+YOUTUBE_MIN_VIEWS  = 200000   # 20만 이상 (부족 시 10만으로 자동 완화)
 YOUTUBE_DAYS       = 3        # 최근 3일 이내
 YOUTUBE_TARGET     = 30       # 목표 수집 개수
 
@@ -335,36 +334,77 @@ def collect_youtube():
         try:
             stats_resp = requests.get(
                 'https://www.googleapis.com/youtube/v3/videos',
-                params={'key': YOUTUBE_KEY, 'id': ','.join(batch), 'part': 'statistics'},
+                params={'key': YOUTUBE_KEY, 'id': ','.join(batch), 'part': 'statistics,contentDetails'},
                 timeout=30,
             )
             for s in stats_resp.json().get('items', []):
                 vid_id = s['id']
                 views = int(s['statistics'].get('viewCount', 0))
-                if views >= YOUTUBE_MIN_VIEWS:
-                    meta = id_to_meta[vid_id].copy()
-                    meta['views'] = views
-                    results.append(meta)
+                if views < 100000:
+                    continue
+
+                # 영상 길이 파싱 (ISO 8601: PT1M30S 등)
+                duration_str = s.get('contentDetails', {}).get('duration', 'PT0S')
+                import re as _re
+                hours   = int((_re.search(r'(\d+)H', duration_str) or type('', (), {'group': lambda *a: 0})()).group(1) or 0)
+                minutes = int((_re.search(r'(\d+)M', duration_str) or type('', (), {'group': lambda *a: 0})()).group(1) or 0)
+                seconds = int((_re.search(r'(\d+)S', duration_str) or type('', (), {'group': lambda *a: 0})()).group(1) or 0)
+                total_sec = hours * 3600 + minutes * 60 + seconds
+                is_short = total_sec <= 60
+
+                meta = id_to_meta[vid_id].copy()
+                meta['views']    = views
+                meta['is_short'] = is_short
+                meta['duration'] = duration_str
+                results.append(meta)
         except Exception as e:
             print(f'  ⚠️ 조회수 조회 실패: {e}')
 
     # 조회수 내림차순 정렬
     results.sort(key=lambda x: x['views'], reverse=True)
+    print(f'  → 10만 이상 후보 {len(results)}개')
 
-    # 채널당 1개만 (조회수 높은 것 우선) → 상위 30개
-    seen_channels = set()
-    deduped = []
-    for r in results:
-        ch = r.get('channel', '')
-        if ch in seen_channels:
-            continue
-        seen_channels.add(ch)
-        deduped.append(r)
-        if len(deduped) >= YOUTUBE_TARGET:
-            break
+    def dedup_by_channel(items, target):
+        seen_channels = set()
+        deduped = []
+        for r in items:
+            ch = r.get('channel', '')
+            if ch in seen_channels:
+                continue
+            seen_channels.add(ch)
+            deduped.append(r)
+            if len(deduped) >= target:
+                break
+        return deduped
 
-    print(f'  → 조회수 {YOUTUBE_MIN_VIEWS:,}회 이상 / 채널 중복 제거 후 {len(deduped)}개 수집')
-    return deduped
+    # 한국 채널 필터 (제목 또는 채널명에 한글 포함)
+    def has_korean(text):
+        return bool(re.search(r'[가-힣]', text or ''))
+
+    korean = [r for r in results if has_korean(r.get('title','')) or has_korean(r.get('channel',''))]
+    print(f'  → 한국 채널 필터 후 {len(korean)}개')
+
+    # 숏폼 / 롱폼 분리
+    shorts   = [r for r in korean if r.get('is_short')]
+    longform = [r for r in korean if not r.get('is_short')]
+
+    # 롱폼: 20만 우선, 부족하면 10만으로 채움 (최대 20개)
+    lf_above = [r for r in longform if r['views'] >= YOUTUBE_MIN_VIEWS]
+    lf_dedup = dedup_by_channel(lf_above, 20)
+    if len(lf_dedup) < 20:
+        lf_dedup = dedup_by_channel(longform, 20)
+
+    # 숏폼: 최대 10개
+    sf_dedup = dedup_by_channel(shorts, 10)
+
+    # 합치기 (롱폼 먼저)
+    final = lf_dedup + sf_dedup
+    # 순위 재부여
+    for i, item in enumerate(final, 1):
+        item['rank'] = i
+
+    print(f'  → 롱폼 {len(lf_dedup)}개 + 숏폼 {len(sf_dedup)}개 = 최종 {len(final)}개')
+    return final
 
 
 def rank_items(category, items):
@@ -438,14 +478,15 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
 
     # ④ 급상승 콘텐츠
     ws4 = get_or_create_sheet(workbook, '유튜브 급상승 콘텐츠', [
-        '순위', '수집날짜', '업로드일자', '플랫폼', '채널명', '제목', '조회수', '키워드', '링크', '썸네일',
+        '순위', '수집날짜', '업로드일자', '유형', '채널명', '제목', '조회수', '키워드', '링크', '썸네일',
     ])
     rows4 = []
     for item in viral_data:
         thumb = item.get('thumbnail', '')
         img_formula = f'=IMAGE("{thumb}",2)' if thumb else ''
         rows4.append([
-            item.get('rank', ''), TODAY, item.get('published_at', ''), item.get('platform', ''),
+            item.get('rank', ''), TODAY, item.get('published_at', ''),
+            '숏폼' if item.get('is_short') else '롱폼',
             item.get('channel', ''), item.get('title', ''), item.get('views', 0),
             item.get('keyword', ''), item.get('url', ''), img_formula,
         ])
