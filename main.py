@@ -168,17 +168,17 @@ def collect_competitors():
     print(f'  📥 최근 3일 게시물 수집 중...')
     try:
         recent = fetch_posts_apify('현재', limit=200)
-        yesterday = (today - timedelta(days=1)).isoformat()
         for p in recent:
             pub = p.get('published_at', '')
             if pub:
                 try:
-                    pub_date = pub[:10]
-                    # 어제 하루치만 수집
-                    if pub_date != yesterday:
+                    pub_dt = date.fromisoformat(pub[:10])
+                    if (today - pub_dt).days > 3:
                         continue
                 except:
                     pass
+            else:
+                continue  # 발행일자 없으면 제외
             results.append(p)
         print(f'     → {len(results)}개 (조건 충족)')
     except Exception as e:
@@ -438,16 +438,9 @@ def collect_youtube():
         if len(deduped) >= YOUTUBE_TARGET:
             break
 
-    # 부족하면 조회수 필터 없이 채움
+    # 부족해도 날짜 필터는 유지 (오래된 영상 절대 포함 안 함)
     if len(deduped) < YOUTUBE_TARGET:
-        korean.sort(key=lambda x: x['views'], reverse=True)
-        for r in korean:
-            ch = r.get('channel','')
-            if ch not in seen_ch:
-                seen_ch.add(ch)
-                deduped.append(r)
-            if len(deduped) >= YOUTUBE_TARGET:
-                break
+        print(f'  → 조건 충족 영상 {len(deduped)}개 (최근 {YOUTUBE_DAYS}일 + 20만뷰 기준)')
 
     print(f'  → 최종 {len(deduped)}개 (롱폼/숏폼 포함)')
     return deduped
