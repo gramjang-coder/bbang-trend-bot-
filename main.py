@@ -175,8 +175,16 @@ def collect_competitors():
     try:
         recent = fetch_posts_apify('현재', limit=200)
         for p in recent:
-            # Apify는 최신순으로 반환 → 날짜 필터 불필요
-            # 인게이지먼트 조건만 체크
+            # 발행일자 있으면 7일 이내만 (너무 오래된 게시물 제외)
+            pub = p.get('published_at', '')
+            if pub:
+                try:
+                    pub_dt = date.fromisoformat(pub[:10])
+                    if (today - pub_dt).days > 7:
+                        continue
+                except:
+                    pass
+            # 인게이지먼트 조건
             if (p.get('views', 0) >= 100000 or
                     p.get('likes', 0) >= 1000 or
                     p.get('comments', 0) >= 50):
@@ -331,22 +339,30 @@ def collect_youtube():
     candidate_ids = []
     id_to_meta = {}
 
-    # 1단계: 키워드별 최근 영상 검색 (최대 50개씩)
+    # 1단계: 최신순 + 조회수순 두 가지로 검색
     for kw in YOUTUBE_KEYWORDS:
-        try:
-            resp = requests.get(
-                'https://www.googleapis.com/youtube/v3/search',
-                params={
+        for order in ['date', 'viewCount']:
+            try:
+                params = {
                     'key': YOUTUBE_KEY, 'q': kw, 'type': 'video',
-                    'order': 'viewCount', 'regionCode': 'KR',
+                    'order': order, 'regionCode': 'KR',
                     'relevanceLanguage': 'ko', 'maxResults': 50,
-                    'part': 'snippet', 'publishedAfter': published_after,
-                },
-                timeout=30,
-            )
-            for item in resp.json().get('items', []):
-                vid_id = item['id']['videoId']
-                if vid_id not in id_to_meta:
+                    'part': 'snippet',
+                }
+                if order == 'date':
+                    params['publishedAfter'] = published_after
+                resp = requests.get(
+                    'https://www.googleapis.com/youtube/v3/search',
+                    params=params, timeout=30,
+                )
+                data = resp.json()
+                if 'error' in data:
+                    print(f'  ⚠️ 검색 API 에러 ({kw}/{order}): {data["error"].get("message","")}')
+                    continue
+                for item in data.get('items', []):
+                    vid_id = item['id'].get('videoId')
+                    if not vid_id or vid_id in id_to_meta:
+                        continue
                     candidate_ids.append(vid_id)
                     id_to_meta[vid_id] = {
                         'title':        item['snippet']['title'],
@@ -357,9 +373,9 @@ def collect_youtube():
                         'platform':     'YouTube',
                         'thumbnail':    item['snippet'].get('thumbnails', {}).get('high', {}).get('url', ''),
                     }
-        except Exception as e:
-            print(f'  ⚠️ 유튜브 검색 실패 ({kw}): {e}')
-            import traceback; traceback.print_exc()
+            except Exception as e:
+                print(f'  ⚠️ 유튜브 검색 실패 ({kw}/{order}): {e}')
+    print(f'  → 후보 {len(candidate_ids)}개')
 
     print(f'  → 후보 {len(candidate_ids)}개, 조회수 확인 중...')
 
