@@ -109,7 +109,7 @@ def parse_post(item, period):
     return {
         'account':      item.get('ownerUsername', '') or item.get('username', ''),
         'caption':      caption[:300],
-        'likes':        item.get('likesCount', 0) or item.get('likes', 0) or 0,
+        'likes':        max(0, item.get('likesCount', 0) or item.get('likes', 0) or 0),
         'comments':     item.get('commentsCount', 0) or item.get('comments', 0) or 0,
         'views':        item.get('videoViewCount', 0) or item.get('videoPlayCount', 0) or item.get('viewCount', 0) or 0,
         'url':          item.get('url', ''),
