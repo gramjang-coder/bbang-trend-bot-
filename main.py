@@ -17,24 +17,11 @@ SHEET_ID     = '1Z0MsWDAOpIXzC6kA3RO5igkapu5UMCV4yC0KQsb9XXw'
 TODAY = date.today().isoformat()
 
 COMPETITOR_ACCOUNTS = [
-    'knewnew.official',
-    'omuck.official',
-    'eyesmag',
-    'dailyfood_news',
-    'daily_fnb',
-    'idea82people',
-    'cbi.busan',
-    'dailyfashion_news',
-    'yeomi.travel',
-    'daytripkorea',
-    'luxmag.kr',
-    'seoulhotple',
-    'hweekmag',
-    'artart.today',
-    'yomagazine_',
-    'seoul_thehotple',
-    '_tripgoing',
-    'all.about.20s',
+    'knewnew.official', 'omuck.official', 'eyesmag', 'dailyfood_news',
+    'daily_fnb', 'idea82people', 'cbi.busan', 'dailyfashion_news',
+    'yeomi.travel', 'daytripkorea', 'luxmag.kr', 'seoulhotple',
+    'hweekmag', 'artart.today', 'yomagazine_', 'seoul_thehotple',
+    '_tripgoing', 'all.about.20s',
 ]
 
 BUZZ_KEYWORDS = ['빵', '베이커리', '소금빵', '크루아상', '디저트카페', '빵집투어', '브런치']
@@ -42,14 +29,10 @@ BUZZ_KEYWORDS = ['빵', '베이커리', '소금빵', '크루아상', '디저트�
 
 def get_sheet():
     creds_info = json.loads(GCP_JSON)
-    scopes = [
-        'https://www.googleapis.com/auth/spreadsheets',
-        'https://www.googleapis.com/auth/drive',
-    ]
+    scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
     creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
     gc = gspread.authorize(creds)
     spreadsheet = gc.open_by_key(SHEET_ID)
-    # 시트 이름이 다르면 변경
     if spreadsheet.title != '빵모닝 기획 아이디어 수집':
         spreadsheet.update_title('빵모닝 기획 아이디어 수집')
     return spreadsheet
@@ -132,11 +115,9 @@ def _within_days(pub_str, min_days, max_days, today):
 
 
 def fetch_posts_apify(label, newer_than=None, older_than=None, limit=5):
-    """비용 최소화: 3개씩 묶어서 요청 (18개 → 6번 실행)"""
     BATCH_SIZE = 3
     PER_ACCOUNT = min(limit, 5)
     all_data = []
-
     for i in range(0, len(COMPETITOR_ACCOUNTS), BATCH_SIZE):
         batch = COMPETITOR_ACCOUNTS[i:i+BATCH_SIZE]
         params = {
@@ -150,7 +131,6 @@ def fetch_posts_apify(label, newer_than=None, older_than=None, limit=5):
             print(f'  배치 {i//BATCH_SIZE+1}: {len(data)}개')
         except Exception as e:
             print(f'  ⚠️ 배치 {i//BATCH_SIZE+1} 실패: {e}')
-
     seen = set()
     results = []
     for item in all_data:
@@ -160,11 +140,12 @@ def fetch_posts_apify(label, newer_than=None, older_than=None, limit=5):
         seen.add(url)
         results.append(parse_post(item, label))
     return results
+
+
 def collect_competitors():
     print('👥 레퍼런스 계정 수집 중...')
     today = date.today()
     results = []
-
     print(f'  📥 최근 3일 게시물 수집 중...')
     try:
         recent = fetch_posts_apify('현재', limit=200)
@@ -178,14 +159,14 @@ def collect_competitors():
                 except:
                     pass
             else:
-                continue  # 발행일자 없으면 제외
+                continue
             results.append(p)
         print(f'     → {len(results)}개 (조건 충족)')
     except Exception as e:
         print(f'  ⚠️ 수집 실패: {e}')
-
     print(f'  → 합계 {len(results)}개 수집')
     return results
+
 
 FILTER_TAGS = {
     '광고', '협찬', '제작지원', 'ad', 'sponsored', 'pr', 'collaboration', 'partnership',
@@ -208,7 +189,6 @@ def _is_meaningful_tag(tag):
 
 
 def extract_keywords_from_captions(competitor_data):
-    """캡션에서 kiwipiepy로 명사 추출 후 5회 이상 언급 키워드 집계"""
     print('📌 캡션 키워드 추출 중...')
     try:
         from kiwipiepy import Kiwi
@@ -223,16 +203,13 @@ def extract_keywords_from_captions(competitor_data):
         '정말', '너무', '진짜', '아주', '매우', '더', '또', '도', '만',
         '광고', '협찬', '제작지원', '맞팔', '좋아요', '팔로우',
     }
-
     counter = Counter()
     post_examples = {}
-
     for item in competitor_data:
         caption = item.get('caption', '') or ''
         post_url = item.get('url', '')
         if not caption:
             continue
-
         if use_kiwi:
             try:
                 tokens = kiwi.tokenize(caption)
@@ -241,14 +218,12 @@ def extract_keywords_from_captions(competitor_data):
                 words = [w for w in caption.split() if len(w) >= 2 and re.search(r'[가-힣]', w)]
         else:
             words = [w for w in re.split(r'[\s\W]+', caption) if len(w) >= 2 and re.search(r'[가-힣]', w)]
-
         for word in words:
             if word in STOP_WORDS:
                 continue
             counter[word] += 1
             if word not in post_examples:
                 post_examples[word] = post_url
-
     qualified = [(w, c) for w, c in counter.most_common() if c >= 5][:30]
     results = []
     for rank, (w, count) in enumerate(qualified, 1):
@@ -257,79 +232,11 @@ def extract_keywords_from_captions(competitor_data):
     return results
 
 
-def collect_youtube_buzz():
-    """유튜브에서 키워드별 최근 인기 영상 수 집계 → 버즈량으로 활용"""
-    print('📺 유튜브 키워드 버즈량 수집 중...')
-    results = []
-    for kw in BUZZ_KEYWORDS:
-        try:
-            resp = requests.get(
-                'https://www.googleapis.com/youtube/v3/search',
-                params={
-                    'key': YOUTUBE_KEY, 'q': kw, 'type': 'video',
-                    'order': 'date', 'regionCode': 'KR',
-                    'relevanceLanguage': 'ko', 'maxResults': 10,
-                    'part': 'snippet',
-                    'publishedAfter': f'{(date.today() - timedelta(days=7)).isoformat()}T00:00:00Z',
-                },
-                timeout=30,
-            )
-            count = len(resp.json().get('items', []))
-            results.append({
-                'keyword': kw,
-                'mention_count': count,
-                'platform': 'YouTube',
-                'url': f'https://www.youtube.com/results?search_query={kw}&sp=EgIIAg%3D%3D',
-            })
-        except Exception as e:
-            print(f'  ⚠️ 유튜브 버즈 {kw} 실패: {e}')
-    print(f'  → {len(results)}개 수집')
-    return results
-
-
-def collect_naver_blog():
-    """네이버 블로그 검색으로 키워드별 최근 언급량 수집"""
-    print('🔍 네이버 블로그 버즈량 수집 중...')
-    results = []
-    if not NAVER_ID:
-        print('  → 네이버 키 없음, 스킵')
-        return results
-    for kw in BUZZ_KEYWORDS:
-        try:
-            resp = requests.get(
-                'https://openapi.naver.com/v1/search/blog.json',
-                headers={'X-Naver-Client-Id': NAVER_ID, 'X-Naver-Client-Secret': NAVER_SECRET},
-                params={'query': kw, 'display': 10, 'sort': 'date'},
-                timeout=30,
-            )
-            items = resp.json().get('items', [])
-            # 오늘 날짜 게시글 수 카운트
-            today_count = sum(1 for i in items if TODAY.replace('-','') in i.get('postdate',''))
-            results.append({
-                'keyword': kw,
-                'mention_count': today_count if today_count > 0 else len(items),
-                'platform': 'Naver Blog',
-                'url': f'https://search.naver.com/search.naver?where=blog&query={kw}&st=date',
-            })
-        except Exception as e:
-            print(f'  ⚠️ 네이버 블로그 {kw} 실패: {e}')
-    print(f'  → {len(results)}개 수집')
-    return results
-
-
-# 유튜브 수집 기준
-YOUTUBE_KEYWORDS   = ['빵', '떡', '여행', '베이커리', '카페', '맛집', '디저트', '소금빵', '크루아상']
-YOUTUBE_MIN_VIEWS  = 200000   # 20만 이상 (부족 시 10만으로 자동 완화)
-YOUTUBE_DAYS       = 3        # 최근 3일 이내
-YOUTUBE_TARGET     = 30       # 목표 수집 개수
-
-
 def collect_youtube():
     print('📺 유튜브 급상승 수집 중...')
     candidate_ids = []
     id_to_meta = {}
 
-    # 하루씩 3일치 수집 (당일 편중 방지), 키워드별 조회수순
     for kw in ['빵', '떡', '여행']:
         for days_ago in range(0, 3):
             day_start = (date.today() - timedelta(days=days_ago+1)).isoformat() + 'T00:00:00Z'
@@ -338,13 +245,9 @@ def collect_youtube():
                 resp = requests.get(
                     'https://www.googleapis.com/youtube/v3/search',
                     params={
-                        'key': YOUTUBE_KEY,
-                        'q': kw,
-                        'type': 'video',
-                        'order': 'viewCount',
-                        'regionCode': 'KR',
-                        'relevanceLanguage': 'ko',
-                        'maxResults': 50,
+                        'key': YOUTUBE_KEY, 'q': kw, 'type': 'video',
+                        'order': 'viewCount', 'regionCode': 'KR',
+                        'relevanceLanguage': 'ko', 'maxResults': 50,
                         'part': 'snippet',
                         'publishedAfter': day_start,
                         'publishedBefore': day_end,
@@ -378,7 +281,6 @@ def collect_youtube():
     if not candidate_ids:
         return []
 
-    # 조회수 + 길이 조회
     all_videos = []
     for i in range(0, len(candidate_ids), 50):
         batch = candidate_ids[i:i+50]
@@ -408,12 +310,8 @@ def collect_youtube():
             print(f'  ⚠️ videos API 실패: {e}')
 
     print(f'  → 전체 {len(all_videos)}개')
-
-    # 한국어 필터
     korean = [v for v in all_videos if re.search(r'[가-힣]', v.get('title','') + v.get('channel',''))]
     print(f'  → 한국 콘텐츠 {len(korean)}개')
-
-    # 조회수 내림차순
     korean.sort(key=lambda x: x['views'], reverse=True)
 
     def pick(items, n):
@@ -438,7 +336,7 @@ def collect_youtube():
 def rank_items(category, items):
     if not items:
         return []
-    if category == '경쟁 계정 성과':
+    if category == '경쟝 계정 성과':
         key = lambda x: x.get('likes', 0) + x.get('comments', 0) + x.get('views', 0)
     elif category == 'F&B 키워드 버즈량':
         key = lambda x: x.get('mention_count', 0)
@@ -466,7 +364,7 @@ def set_row_heights(workbook, ws, start_row, end_row, height=150):
 
 def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
 
-    # ① 경쟁 계정 성과
+    # ① 인스타그램 레퍼런스 계정 성과
     ws1 = get_or_create_sheet(workbook, '인스타그램 레퍼런스 계정 성과', [
         '순위', '수집날짜', '발행일자', '기간', '계정명',
         '좋아요', '댓글', '조회수', '인게이지먼트', '캡션', '사용해시태그', '원본링크',
@@ -477,29 +375,28 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
         likes = item.get('likes', 0)
         comments = item.get('comments', 0)
         views = item.get('views', 0)
-        link_formula = url
         rows1.append([
             item.get('rank', ''), TODAY, item.get('published_at', ''), item.get('period', ''),
             item.get('account', ''), likes, comments, views,
-            likes + comments, item.get('caption', ''), item.get('hashtags', ''), link_formula,
+            likes + comments, item.get('caption', ''), item.get('hashtags', ''), url,
         ])
     if rows1:
         start_row = len(ws1.get_all_values()) + 1
         ws1.append_rows(rows1, value_input_option='USER_ENTERED')
         end_row = start_row + len(rows1) - 1
-        # 글자 크기 12, 숫자 포맷
         ws1.format(f'A{start_row}:L{end_row}', {'textFormat': {'fontSize': 12}})
         ws1.format(f'F{start_row}:H{end_row}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
         ws1.format(f'I{start_row}:I{end_row}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
-    # 헤더 포맷 + 필터
     ws1.format('1:1', {'textFormat': {'fontSize': 12, 'bold': True}})
     try:
-        ws1.spreadsheet.batch_update({'requests': [{'setBasicFilter': {'filter': {'range': {'sheetId': ws1.id, 'startRowIndex': 0, 'startColumnIndex': 0, 'endColumnIndex': 12}}}}]})
+        ws1.spreadsheet.batch_update({'requests': [{'setBasicFilter': {'filter': {'range': {
+            'sheetId': ws1.id, 'startRowIndex': 0, 'startColumnIndex': 0, 'endColumnIndex': 12
+        }}}}]})
     except Exception as e:
-        print(f'  ⚠️ 필터 설정 실패: {e}')
+        print(f'  ⚠️ 인스타 필터 설정 실패: {e}')
     print(f'  ✅ 인스타그램 레퍼런스 계정 성과 {len(rows1)}행 저장')
 
-    # ② 트렌딩 해시태그
+    # ② 언급 많은 키워드
     ws2 = get_or_create_sheet(workbook, '언급 많은 키워드', ['순위', '수집날짜', '키워드', '언급횟수', '대표게시물링크'])
     rows2 = [[i['rank'], TODAY, i['keyword'], i['count'], i['example_url']] for i in hashtag_data]
     if rows2:
@@ -510,7 +407,7 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
         ws2.format(f'E{start_row2}:E{end_row2}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
     print(f'  ✅ 언급 많은 키워드 {len(rows2)}행 저장')
 
-    # ④ 급상승 콘텐츠
+    # ③ 유튜브 급상승 콘텐츠
     ws4 = get_or_create_sheet(workbook, '유튜브 급상승 콘텐츠', [
         '순위', '수집날짜', '업로드일자', '유형', '채널명', '제목', '조회수', '키워드', '링크', '썸네일',
     ])
@@ -538,6 +435,13 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
                 'fields': 'pixelSize',
             }
         }]})
+    ws4.format('1:1', {'textFormat': {'fontSize': 12, 'bold': True}})
+    try:
+        ws4.spreadsheet.batch_update({'requests': [{'setBasicFilter': {'filter': {'range': {
+            'sheetId': ws4.id, 'startRowIndex': 0, 'startColumnIndex': 0, 'endColumnIndex': 10
+        }}}}]})
+    except Exception as e:
+        print(f'  ⚠️ 유튜브 필터 설정 실패: {e}')
     print(f'  ✅ 유튜브 급상승 콘텐츠 {len(rows4)}행 저장')
 
 
@@ -547,7 +451,13 @@ if __name__ == '__main__':
     competitor_data = collect_competitors()
     hashtag_data    = extract_keywords_from_captions(competitor_data)
     viral_data      = rank_items('급상승 콘텐츠', collect_youtube())
-    # 발행일자 최신순 정렬
+
+    # 유튜브: 업로드일자 최신순 정렬
+    viral_data.sort(key=lambda x: x.get('published_at', ''), reverse=True)
+    for i, item in enumerate(viral_data, 1):
+        item['rank'] = i
+
+    # 인스타: 발행일자 최신순 정렬
     competitor_data.sort(key=lambda x: x.get('published_at', ''), reverse=True)
     for i, item in enumerate(competitor_data, 1):
         item['rank'] = i
