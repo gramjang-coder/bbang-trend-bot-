@@ -146,19 +146,15 @@ def collect_competitors():
     print('👥 레퍼런스 계정 수집 중...')
     today = date.today()
     results = []
-    print(f'  📥 최근 3일 게시물 수집 중...')
+    print(f'  📥 어제 발행된 게시물 수집 중...')
     try:
         recent = fetch_posts_apify('현재', limit=200)
+        yesterday = (today - timedelta(days=1)).isoformat()
         for p in recent:
             pub = p.get('published_at', '')
-            if pub:
-                try:
-                    pub_dt = date.fromisoformat(pub[:10])
-                    if (today - pub_dt).days > 3:
-                        continue
-                except:
-                    pass
-            else:
+            if not pub:
+                continue
+            if pub[:10] != yesterday:
                 continue
             results.append(p)
         print(f'     → {len(results)}개 (조건 충족)')
@@ -404,7 +400,7 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
         ws2.append_rows(rows2, value_input_option='USER_ENTERED')
         end_row2 = start_row2 + len(rows2) - 1
         ws2.format(f'A{start_row2}:F{end_row2}', {'textFormat': {'fontSize': 12}})
-        ws2.format(f'E{start_row2}:E{end_row2}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
+        ws2.format(f'D{start_row2}:D{end_row2}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
     print(f'  ✅ 언급 많은 키워드 {len(rows2)}행 저장')
 
     # ③ 유튜브 급상승 콘텐츠
