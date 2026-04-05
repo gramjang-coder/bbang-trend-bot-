@@ -326,48 +326,53 @@ YOUTUBE_TARGET     = 30       # 목표 수집 개수
 
 def collect_youtube():
     print('📺 유튜브 급상승 수집 중...')
-    published_after = (date.today() - timedelta(days=3)).isoformat() + 'T00:00:00Z'
     candidate_ids = []
     id_to_meta = {}
 
+    # 하루씩 3일치 수집 (당일 편중 방지), 키워드별 조회수순
     for kw in ['빵', '떡', '여행']:
-        try:
-            resp = requests.get(
-                'https://www.googleapis.com/youtube/v3/search',
-                params={
-                    'key': YOUTUBE_KEY,
-                    'q': kw,
-                    'type': 'video',
-                    'order': 'date',
-                    'regionCode': 'KR',
-                    'relevanceLanguage': 'ko',
-                    'maxResults': 50,
-                    'part': 'snippet',
-                    'publishedAfter': published_after,
-                },
-                timeout=30,
-            )
-            data = resp.json()
-            if 'error' in data:
-                print(f'  ⚠️ [{kw}] 에러: {data["error"].get("message","")}')
-                continue
-            for item in data.get('items', []):
-                vid_id = item.get('id', {}).get('videoId')
-                if not vid_id or vid_id in id_to_meta:
+        for days_ago in range(0, 3):
+            day_start = (date.today() - timedelta(days=days_ago+1)).isoformat() + 'T00:00:00Z'
+            day_end   = (date.today() - timedelta(days=days_ago)).isoformat() + 'T00:00:00Z'
+            try:
+                resp = requests.get(
+                    'https://www.googleapis.com/youtube/v3/search',
+                    params={
+                        'key': YOUTUBE_KEY,
+                        'q': kw,
+                        'type': 'video',
+                        'order': 'viewCount',
+                        'regionCode': 'KR',
+                        'relevanceLanguage': 'ko',
+                        'maxResults': 50,
+                        'part': 'snippet',
+                        'publishedAfter': day_start,
+                        'publishedBefore': day_end,
+                    },
+                    timeout=30,
+                )
+                data = resp.json()
+                if 'error' in data:
+                    print(f'  ⚠️ [{kw} -{days_ago}일] 에러: {data["error"].get("message","")}')
                     continue
-                candidate_ids.append(vid_id)
-                id_to_meta[vid_id] = {
-                    'title':        item['snippet']['title'],
-                    'channel':      item['snippet']['channelTitle'],
-                    'keyword':      kw,
-                    'published_at': item['snippet'].get('publishedAt', '')[:10],
-                    'url':          f'https://www.youtube.com/watch?v={vid_id}',
-                    'platform':     'YouTube',
-                    'thumbnail':    item['snippet'].get('thumbnails', {}).get('high', {}).get('url', ''),
-                }
-            print(f'  [{kw}]: {len(data.get("items", []))}개 검색')
-        except Exception as e:
-            print(f'  ⚠️ [{kw}] 실패: {e}')
+                items = data.get('items', [])
+                print(f'  [{kw} -{days_ago}일]: {len(items)}개')
+                for item in items:
+                    vid_id = item.get('id', {}).get('videoId')
+                    if not vid_id or vid_id in id_to_meta:
+                        continue
+                    candidate_ids.append(vid_id)
+                    id_to_meta[vid_id] = {
+                        'title':        item['snippet']['title'],
+                        'channel':      item['snippet']['channelTitle'],
+                        'keyword':      kw,
+                        'published_at': item['snippet'].get('publishedAt', '')[:10],
+                        'url':          f'https://www.youtube.com/watch?v={vid_id}',
+                        'platform':     'YouTube',
+                        'thumbnail':    item['snippet'].get('thumbnails', {}).get('high', {}).get('url', ''),
+                    }
+            except Exception as e:
+                print(f'  ⚠️ [{kw} -{days_ago}일] 실패: {e}')
 
     print(f'  → 후보 {len(candidate_ids)}개, 조회수/길이 확인 중...')
     if not candidate_ids:
@@ -402,16 +407,15 @@ def collect_youtube():
         except Exception as e:
             print(f'  ⚠️ videos API 실패: {e}')
 
-    print(f'  → 전체 {len(all_videos)}개 수집')
+    print(f'  → 전체 {len(all_videos)}개')
 
-    # 한국어 채널/제목 필터
+    # 한국어 필터
     korean = [v for v in all_videos if re.search(r'[가-힣]', v.get('title','') + v.get('channel',''))]
     print(f'  → 한국 콘텐츠 {len(korean)}개')
 
     # 조회수 내림차순
     korean.sort(key=lambda x: x['views'], reverse=True)
 
-    # 롱폼 20개, 숏폼 10개 (채널 중복 제거)
     def pick(items, n):
         seen = set()
         out = []
@@ -473,7 +477,7 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
         likes = item.get('likes', 0)
         comments = item.get('comments', 0)
         views = item.get('views', 0)
-        link_formula = f'=HYPERLINK("{url}","링크")' if url else ''
+        link_formula = url
         rows1.append([
             item.get('rank', ''), TODAY, item.get('published_at', ''), item.get('period', ''),
             item.get('account', ''), likes, comments, views,
@@ -487,6 +491,12 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
         ws1.format(f'A{start_row}:L{end_row}', {'textFormat': {'fontSize': 12}})
         ws1.format(f'F{start_row}:H{end_row}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
         ws1.format(f'I{start_row}:I{end_row}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
+    # 헤더 포맷 + 필터
+    ws1.format('1:1', {'textFormat': {'fontSize': 12, 'bold': True}})
+    try:
+        ws1.spreadsheet.batch_update({'requests': [{'setBasicFilter': {'filter': {'range': {'sheetId': ws1.id, 'startRowIndex': 0, 'startColumnIndex': 0, 'endColumnIndex': 12}}}}]})
+    except Exception as e:
+        print(f'  ⚠️ 필터 설정 실패: {e}')
     print(f'  ✅ 인스타그램 레퍼런스 계정 성과 {len(rows1)}행 저장')
 
     # ② 트렌딩 해시태그
