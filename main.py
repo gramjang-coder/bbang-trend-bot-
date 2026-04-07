@@ -114,15 +114,15 @@ def _within_days(pub_str, min_days, max_days, today):
         return False
 
 
-def fetch_posts_apify(label, newer_than=None, older_than=None, limit=15):
-    BATCH_SIZE = 3
+def fetch_posts_apify(label, newer_than=None, older_than=None, limit=20):
+    BATCH_SIZE = 2  # 2개씩 묶어서 계정당 더 많이 수집
     all_data = []
     for i in range(0, len(COMPETITOR_ACCOUNTS), BATCH_SIZE):
         batch = COMPETITOR_ACCOUNTS[i:i+BATCH_SIZE]
         params = {
             'directUrls': [f'https://www.instagram.com/{acc}/' for acc in batch],
             'resultsType': 'posts',
-            'resultsLimit': limit * BATCH_SIZE,  # 계정당 limit개씩 보장
+            'resultsLimit': limit,  # 2개 계정에 총 20개 = 계정당 약 10개
         }
         try:
             data = run_apify('apify/instagram-scraper', params)
