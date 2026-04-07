@@ -114,16 +114,15 @@ def _within_days(pub_str, min_days, max_days, today):
         return False
 
 
-def fetch_posts_apify(label, newer_than=None, older_than=None, limit=5):
+def fetch_posts_apify(label, newer_than=None, older_than=None, limit=15):
     BATCH_SIZE = 3
-    PER_ACCOUNT = min(limit, 5)
     all_data = []
     for i in range(0, len(COMPETITOR_ACCOUNTS), BATCH_SIZE):
         batch = COMPETITOR_ACCOUNTS[i:i+BATCH_SIZE]
         params = {
             'directUrls': [f'https://www.instagram.com/{acc}/' for acc in batch],
             'resultsType': 'posts',
-            'resultsLimit': PER_ACCOUNT,
+            'resultsLimit': limit * BATCH_SIZE,  # 계정당 limit개씩 보장
         }
         try:
             data = run_apify('apify/instagram-scraper', params)
@@ -220,7 +219,7 @@ def extract_keywords_from_captions(competitor_data):
             counter[word] += 1
             if word not in post_examples:
                 post_examples[word] = post_url
-    qualified = [(w, c) for w, c in counter.most_common() if c >= 5][:30]
+    qualified = [(w, c) for w, c in counter.most_common() if c >= 2][:30]
     results = []
     for rank, (w, count) in enumerate(qualified, 1):
         results.append({'rank': rank, 'keyword': w, 'count': count, 'example_url': post_examples.get(w, '')})
@@ -308,7 +307,7 @@ def collect_youtube():
     print(f'  → 전체 {len(all_videos)}개')
     korean = [v for v in all_videos if re.search(r'[가-힣]', v.get('title','') + v.get('channel',''))]
     print(f'  → 한국 콘텐츠 {len(korean)}개')
-    korean.sort(key=lambda x: x['views'], reverse=True)
+    korean.sort(key=lambda x: x['views'], reverse=True)  # 조회수 내림차순 (pick용)
 
     def pick(items, n):
         seen = set()
@@ -418,12 +417,12 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
             item.get('keyword', ''), item.get('url', ''), img_formula,
         ])
     if rows4:
-        start = len(ws4.get_all_values()) + 1
-        ws4.append_rows(rows4, value_input_option='USER_ENTERED')
-        end_row4 = start + len(rows4) - 1
-        set_row_heights(workbook, ws4, start, end_row4, 150)
-        ws4.format(f'A{start}:I{end_row4}', {'textFormat': {'fontSize': 12}})
-        ws4.format(f'G{start}:G{end_row4}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
+        # 2행에 삽입 (최신 날짜가 항상 상단)
+        ws4.insert_rows(rows4, row=2, value_input_option='USER_ENTERED')
+        end_row4 = 1 + len(rows4)
+        set_row_heights(workbook, ws4, 2, end_row4, 150)
+        ws4.format(f'A2:I{end_row4}', {'textFormat': {'fontSize': 12}})
+        ws4.format(f'G2:G{end_row4}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
         ws4.spreadsheet.batch_update({'requests': [{
             'updateDimensionProperties': {
                 'range': {'sheetId': ws4.id, 'dimension': 'COLUMNS', 'startIndex': 8, 'endIndex': 9},
