@@ -14,7 +14,7 @@ NAVER_SECRET = os.environ.get('NAVER_CLIENT_SECRET', '')
 GCP_JSON     = os.environ['GOOGLE_SERVICE_ACCOUNT_JSON']
 SHEET_ID     = '1Z0MsWDAOpIXzC6kA3RO5igkapu5UMCV4yC0KQsb9XXw'
 
-TODAY = date.today().isoformat()
+TODAY = (datetime.utcnow() + timedelta(hours=9)).date().isoformat()
 
 COMPETITOR_ACCOUNTS = [
     'knewnew.official', 'omuck.official', 'eyesmag', 'dailyfood_news',
@@ -114,22 +114,33 @@ def _within_days(pub_str, min_days, max_days, today):
         return False
 
 
-def fetch_posts_apify(label, newer_than=None, older_than=None, limit=20):
-    BATCH_SIZE = 2  # 2개씩 묶어서 계정당 더 많이 수집
+def fetch_posts_apify(label, newer_than=None, older_than=None, limit=15):
+    BATCH_SIZE = 3
     all_data = []
     for i in range(0, len(COMPETITOR_ACCOUNTS), BATCH_SIZE):
         batch = COMPETITOR_ACCOUNTS[i:i+BATCH_SIZE]
         params = {
             'directUrls': [f'https://www.instagram.com/{acc}/' for acc in batch],
             'resultsType': 'posts',
-            'resultsLimit': limit,  # 2개 계정에 총 20개 = 계정당 약 10개
+            'resultsLimit': limit,
         }
         try:
             data = run_apify('apify/instagram-scraper', params)
             all_data.extend(data)
             print(f'  배치 {i//BATCH_SIZE+1}: {len(data)}개')
-        except Exception as e:
-            print(f'  ⚠️ 배치 {i//BATCH_SIZE+1} 실패: {e}')
+        except Exception:
+            # 배치 실패 시 계정 개별 재시도
+            for acc in batch:
+                try:
+                    data = run_apify('apify/instagram-scraper', {
+                        'directUrls': [f'https://www.instagram.com/{acc}/'],
+                        'resultsType': 'posts',
+                        'resultsLimit': limit,
+                    })
+                    all_data.extend(data)
+                    print(f'  {acc}: {len(data)}개 (개별)')
+                except Exception as e2:
+                    print(f'  ⚠️ {acc} 실패: {e2}')
     seen = set()
     results = []
     for item in all_data:
@@ -141,19 +152,19 @@ def fetch_posts_apify(label, newer_than=None, older_than=None, limit=20):
     return results
 
 
-def collect_competitors():
+def collect_competitors(target_date=None):
     print('👥 레퍼런스 계정 수집 중...')
-    today = date.today()
+    today = (datetime.utcnow() + timedelta(hours=9)).date()
+    collect_date = target_date or (today - timedelta(days=1)).isoformat()
+    print(f'  📥 {collect_date} 발행된 게시물 수집 중...')
     results = []
-    print(f'  📥 어제 발행된 게시물 수집 중...')
     try:
-        recent = fetch_posts_apify('현재', limit=200)
-        yesterday = (today - timedelta(days=1)).isoformat()
+        recent = fetch_posts_apify('현재', limit=15)
         for p in recent:
             pub = p.get('published_at', '')
             if not pub:
                 continue
-            if pub[:10] != yesterday:
+            if pub[:10] != collect_date:
                 continue
             results.append(p)
         print(f'     → {len(results)}개 (조건 충족)')
@@ -185,18 +196,11 @@ def _is_meaningful_tag(tag):
 
 def extract_keywords_from_captions(competitor_data):
     print('📌 캡션 키워드 추출 중...')
-    try:
-        from kiwipiepy import Kiwi
-        kiwi = Kiwi()
-        use_kiwi = True
-    except ImportError:
-        use_kiwi = False
-        print('  ⚠️ kiwipiepy 미설치, 단순 분리 방식 사용')
-
     STOP_WORDS = {
         '것', '수', '때', '곳', '등', '제', '저', '그', '이', '저희',
         '정말', '너무', '진짜', '아주', '매우', '더', '또', '도', '만',
         '광고', '협찬', '제작지원', '맞팔', '좋아요', '팔로우',
+        '있는', '하는', '없는', '되는', '이번', '오늘', '지금', '여기',
     }
     counter = Counter()
     post_examples = {}
@@ -205,14 +209,9 @@ def extract_keywords_from_captions(competitor_data):
         post_url = item.get('url', '')
         if not caption:
             continue
-        if use_kiwi:
-            try:
-                tokens = kiwi.tokenize(caption)
-                words = [t.form for t in tokens if t.tag.startswith('N') and len(t.form) >= 2]
-            except:
-                words = [w for w in caption.split() if len(w) >= 2 and re.search(r'[가-힣]', w)]
-        else:
-            words = [w for w in re.split(r'[\s\W]+', caption) if len(w) >= 2 and re.search(r'[가-힣]', w)]
+        # 공백/특수문자 기준 분리, 한글 2자 이상 단어만
+        words = [w for w in re.split(r'[\s\W#@]+', caption)
+                 if len(w) >= 2 and re.search(r'^[가-힣]+$', w)]
         for word in words:
             if word in STOP_WORDS:
                 continue
@@ -376,12 +375,12 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
             likes + comments, item.get('caption', ''), item.get('hashtags', ''), url,
         ])
     if rows1:
-        start_row = len(ws1.get_all_values()) + 1
-        ws1.append_rows(rows1, value_input_option='USER_ENTERED')
-        end_row = start_row + len(rows1) - 1
-        ws1.format(f'A{start_row}:L{end_row}', {'textFormat': {'fontSize': 12}})
-        ws1.format(f'F{start_row}:H{end_row}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
-        ws1.format(f'I{start_row}:I{end_row}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
+        # 2행에 삽입 (최신 수집날짜가 항상 상단)
+        ws1.insert_rows(rows1, row=2, value_input_option='USER_ENTERED')
+        end_row = 1 + len(rows1)
+        ws1.format(f'A2:L{end_row}', {'textFormat': {'fontSize': 12}})
+        ws1.format(f'F2:H{end_row}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
+        ws1.format(f'I2:I{end_row}', {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
     ws1.format('1:1', {'textFormat': {'fontSize': 12, 'bold': True}})
     try:
         ws1.spreadsheet.batch_update({'requests': [{'setBasicFilter': {'filter': {'range': {
@@ -443,7 +442,28 @@ def save_to_sheets(workbook, competitor_data, hashtag_data, viral_data):
 if __name__ == '__main__':
     print(f'🚀 트렌드 수집 시작: {TODAY}\n')
 
+    # 어제 데이터 수집
     competitor_data = collect_competitors()
+
+    # 누락 날짜 보완 (시트에 없는 날짜 확인 후 추가)
+    try:
+        workbook_check = get_sheet()
+        ws_check = workbook_check.worksheet('인스타그램 레퍼런스 계정 성과')
+        existing = ws_check.col_values(2)[1:]  # 수집날짜 컬럼
+        today = (datetime.utcnow() + timedelta(hours=9)).date()
+        for days_ago in range(2, 5):  # 최대 4일 전까지 보완
+            check_date = (today - timedelta(days=days_ago)).isoformat()
+            if check_date not in existing:
+                print(f'  📅 누락 날짜 {check_date} 보완 수집 중...')
+                extra = collect_competitors(target_date=(today - timedelta(days=days_ago+1)).isoformat())
+                if extra:
+                    # 수집날짜를 check_date로 변경해서 저장
+                    for item in extra:
+                        item['_collect_date'] = check_date
+                    competitor_data.extend(extra)
+    except Exception as e:
+        print(f'  ⚠️ 누락 보완 실패: {e}')
+
     hashtag_data    = extract_keywords_from_captions(competitor_data)
     viral_data      = rank_items('급상승 콘텐츠', collect_youtube())
 
